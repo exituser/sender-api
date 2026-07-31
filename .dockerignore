@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.DS_Store
+bin/
+tmp/
+web/node_modules/
+web/.next/
+web/.env.local
+*.log

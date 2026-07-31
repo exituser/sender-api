@@ -1,0 +1,4 @@
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS reply_to JSONB DEFAULT '[]';
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS attachments JSONB DEFAULT '[]';
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS verification_dns_record TEXT;
+ALTER TABLE domains ADD COLUMN IF NOT EXISTS verification_status VARCHAR(50) DEFAULT 'pending';
