@@ -10,21 +10,31 @@ services:
       ENV: ${ENV:-development}
       DEBUG: ${DEBUG:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/sender_api
+      DATABASE_URL: postgresql://${POSTGRES_USER:-supabase_admin}:${POSTGRES_PASSWORD:-postgres}@db:5432/sender_api
       REDIS_URL: redis:6379
       AWS_REGION: ${AWS_REGION:-eu-west-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SES_CONFIGSET: ${AWS_SES_CONFIGSET:-}
+      OUTBOUND_SES_TOPIC_ARN: ${OUTBOUND_SES_TOPIC_ARN:-}
       SUPABASE_URL: ${SUPABASE_URL:-http://localhost:54321}
       SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
+      INBOUND_S3_BUCKET: ${INBOUND_S3_BUCKET:-sender-api-inbound}
+      INBOUND_SQS_QUEUE_URL: ${INBOUND_SQS_QUEUE_URL:-}
+      INBOUND_SNS_TOPIC_ARN: ${INBOUND_SNS_TOPIC_ARN:-}
       INBOUND_WEBHOOK_TOKEN: ${INBOUND_WEBHOOK_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 3 -O /dev/null http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - sender-api
 
@@ -34,17 +44,28 @@ services:
       dockerfile: docker/Dockerfile.worker
     environment:
       ENV: ${ENV:-development}
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/sender_api
+      DATABASE_URL: postgresql://${POSTGRES_USER:-supabase_admin}:${POSTGRES_PASSWORD:-postgres}@db:5432/sender_api
       REDIS_URL: redis:6379
       AWS_REGION: ${AWS_REGION:-eu-west-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SES_CONFIGSET: ${AWS_SES_CONFIGSET:-}
+      OUTBOUND_SES_TOPIC_ARN: ${OUTBOUND_SES_TOPIC_ARN:-}
+      INBOUND_S3_BUCKET: ${INBOUND_S3_BUCKET:-sender-api-inbound}
+      INBOUND_SQS_QUEUE_URL: ${INBOUND_SQS_QUEUE_URL:-}
+      INBOUND_SNS_TOPIC_ARN: ${INBOUND_SNS_TOPIC_ARN:-}
+      INBOUND_WEBHOOK_TOKEN: ${INBOUND_WEBHOOK_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$$(cat /proc/1/comm)\" = worker"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - sender-api
 
@@ -64,6 +85,12 @@ services:
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
     depends_on:
       - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 3 -O /dev/null http://localhost:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     networks:
       - sender-api
 
@@ -72,13 +99,16 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     environment:
+      POSTGRES_USER: ${POSTGRES_USER:-supabase_admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: sender_api
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/001_initial.up.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./migrations/003_hardening.up.sql:/docker-entrypoint-initdb.d/03_hardening.sql
+      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/04_compose_version.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-supabase_admin}"]
       interval: 5s
       timeout: 5s
       retries: 5

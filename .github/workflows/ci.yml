@@ -17,12 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
           cache: true
 
       - name: Download dependencies
@@ -33,6 +33,9 @@ jobs:
 
       - name: Test
         run: go test ./cmd/... ./internal/... ./pkg/...
+
+      - name: Race test
+        run: go test -race ./cmd/... ./internal/... ./pkg/...
 
       - name: Vet
         run: go vet ./cmd/... ./internal/... ./pkg/...
@@ -48,12 +51,12 @@ jobs:
         working-directory: web
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "22.x"
+          node-version: "24.x"
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -77,10 +80,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate production Compose configuration
         run: docker compose config --quiet
 
       - name: Validate development Compose configuration
         run: docker compose -f docker-compose.dev.yml config --quiet
+
+      - name: Apply migrations to a clean PostgreSQL container
+        run: |
+          trap 'docker compose -f docker-compose.dev.yml down -v' EXIT
+          docker compose -f docker-compose.dev.yml up -d db
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker compose -f docker-compose.dev.yml exec -T db pg_isready -U supabase_admin -d sender_api; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" -eq 1
+          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM webhook_deliveries LIMIT 1"
+          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM pg_indexes WHERE indexname = 'ux_emails_team_idempotency_key'"
+          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM information_schema.columns WHERE table_name = 'emails' AND column_name = 'sending_at'"
+          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 3 AS version, false AS dirty FROM schema_migrations WHERE version = 3 AND dirty = false"
+          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "INSERT INTO teams (id, name, slug) VALUES ('00000000-0000-0000-0000-000000000001', 'migration-check', 'migration-check'); DELETE FROM teams WHERE id = '00000000-0000-0000-0000-000000000001'"
