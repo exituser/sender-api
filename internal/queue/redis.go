@@ -57,7 +57,7 @@ func (q *RedisQueue) PromoteScheduled(ctx context.Context) error {
 }
 
 func (q *RedisQueue) Dequeue(ctx context.Context) (string, error) {
-	result, err := q.client.BRPopLPush(ctx, emailPendingKey, emailProcessingKey, time.Second).Result()
+	result, err := q.client.BLMove(ctx, emailPendingKey, emailProcessingKey, "RIGHT", "LEFT", time.Second).Result()
 	if errors.Is(err, redis.Nil) {
 		return "", nil
 	}

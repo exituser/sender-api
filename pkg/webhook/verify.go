@@ -87,7 +87,7 @@ func SendWebhookWithID(ctx context.Context, deliveryID uuid.UUID, url string, se
 			lastErr = fmt.Errorf("send webhook: %w", err)
 		} else {
 			responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 				return nil
 			}

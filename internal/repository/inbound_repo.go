@@ -46,9 +46,9 @@ func (r *InboundEmailRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.I
 		return nil, err
 	}
 
-	json.Unmarshal(toJSON, &email.To)
-	json.Unmarshal(attJSON, &email.Attachments)
-	json.Unmarshal(headersJSON, &email.Headers)
+	_ = json.Unmarshal(toJSON, &email.To)
+	_ = json.Unmarshal(attJSON, &email.Attachments)
+	_ = json.Unmarshal(headersJSON, &email.Headers)
 
 	return &email, nil
 }
@@ -101,7 +101,7 @@ func (r *InboundEmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, of
 		if err != nil {
 			return nil, err
 		}
-		json.Unmarshal(toJSON, &email.To)
+		_ = json.Unmarshal(toJSON, &email.To)
 		emails = append(emails, email)
 	}
 	if err := rows.Err(); err != nil {

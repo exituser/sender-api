@@ -145,7 +145,7 @@ func getCertificate(ctx context.Context, rawURL string) (*x509.Certificate, erro
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("certificate endpoint returned %d", response.StatusCode)
 	}

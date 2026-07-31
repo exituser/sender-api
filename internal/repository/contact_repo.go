@@ -39,7 +39,7 @@ func (r *ContactRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Contac
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(propsJSON, &c.Properties)
+	_ = json.Unmarshal(propsJSON, &c.Properties)
 	return &c, nil
 }
 
@@ -61,7 +61,7 @@ func (r *ContactRepo) GetByEmail(ctx context.Context, teamID uuid.UUID, email st
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal(propsJSON, &c.Properties)
+	_ = json.Unmarshal(propsJSON, &c.Properties)
 	return &c, nil
 }
 
@@ -137,7 +137,7 @@ func (r *ContactRepo) BulkCreate(ctx context.Context, contacts []*domain.Contact
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	for _, c := range contacts {
 		propsJSON, _ := json.Marshal(c.Properties)

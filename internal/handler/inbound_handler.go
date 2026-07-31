@@ -41,7 +41,7 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"error":"failed to read body"}`, http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var envelope inbound.SNSNotification
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -72,7 +72,7 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 		msgContent, err := inbound.DecodeNotification([]byte(envelope.Message))
 		if err != nil {
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
 			return
 		}
 		notification = msgContent
@@ -98,7 +98,7 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 
 	if notification == nil || notification.Content == "" {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "no content"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "no content"})
 		return
 	}
 
@@ -106,7 +106,7 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 
 	if from == "" || len(to) == 0 {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "invalid email"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "invalid email"})
 		return
 	}
 
@@ -117,7 +117,7 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 	teamID, err := h.teamForRecipients(r.Context(), routingRecipients)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "domain not found"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "domain not found"})
 		return
 	}
 
@@ -149,7 +149,7 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 	}
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "processed"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "processed"})
 }
 
 func (h *InboundHandler) teamForRecipients(ctx context.Context, recipients []string) (uuid.UUID, error) {

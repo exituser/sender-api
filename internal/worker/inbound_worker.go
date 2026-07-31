@@ -135,7 +135,7 @@ func (w *InboundWorker) readRawEmail(ctx context.Context, bucket, key string) (s
 	if err != nil {
 		return "", fmt.Errorf("read inbound S3 object: %w", err)
 	}
-	defer object.Body.Close()
+	defer func() { _ = object.Body.Close() }()
 	content, err := io.ReadAll(io.LimitReader(object.Body, maxInboundMessageSize+1))
 	if err != nil {
 		return "", fmt.Errorf("read inbound S3 content: %w", err)

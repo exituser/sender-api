@@ -38,7 +38,7 @@ func (h *SESEventHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid SNS body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var envelope inbound.SNSNotification
 	if err := json.Unmarshal(body, &envelope); err != nil {

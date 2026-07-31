@@ -22,8 +22,8 @@ func HTTP(next http.Handler) http.Handler {
 
 func Handler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "sender_api_http_requests_total %d\n", httpRequests.Load())
-	fmt.Fprintf(w, "sender_api_http_server_errors_total %d\n", httpServerErrors.Load())
+	_, _ = fmt.Fprintf(w, "sender_api_http_requests_total %d\n", httpRequests.Load())
+	_, _ = fmt.Fprintf(w, "sender_api_http_server_errors_total %d\n", httpServerErrors.Load())
 }
 
 type statusWriter struct {

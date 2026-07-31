@@ -26,7 +26,7 @@ func RateLimit(redisClient *redis.Client) func(http.Handler) http.Handler {
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
-				fmt.Fprint(w, `{"error":"rate limiter unavailable"}`)
+				_, _ = fmt.Fprint(w, `{"error":"rate limiter unavailable"}`)
 				return
 			}
 
@@ -34,7 +34,7 @@ func RateLimit(redisClient *redis.Client) func(http.Handler) http.Handler {
 				if err := redisClient.Expire(ctx, key, time.Second).Err(); err != nil {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusServiceUnavailable)
-					fmt.Fprint(w, `{"error":"rate limiter unavailable"}`)
+					_, _ = fmt.Fprint(w, `{"error":"rate limiter unavailable"}`)
 					return
 				}
 			}
@@ -46,7 +46,7 @@ func RateLimit(redisClient *redis.Client) func(http.Handler) http.Handler {
 				w.Header().Set("Retry-After", "1")
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
-				fmt.Fprintf(w, `{"error":"rate limit exceeded"}`)
+				_, _ = fmt.Fprintf(w, `{"error":"rate limit exceeded"}`)
 				return
 			}
 

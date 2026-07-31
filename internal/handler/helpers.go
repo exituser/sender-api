@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -20,7 +19,7 @@ func writeError(w http.ResponseWriter, msg string, code int) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
+	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
 }
 
 func isInternalErrorMessage(msg string) bool {
@@ -43,14 +42,10 @@ func isInternalErrorMessage(msg string) bool {
 	return false
 }
 
-func writeErrorf(w http.ResponseWriter, code int, format string, args ...any) {
-	writeError(w, fmt.Sprintf(format, args...), code)
-}
-
 func writeJSON(w http.ResponseWriter, data any, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func getClaims(w http.ResponseWriter, r *http.Request) (*auth.Claims, bool) {

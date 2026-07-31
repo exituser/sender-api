@@ -30,7 +30,7 @@ func (r *TeamRepo) CreateWithOwner(ctx context.Context, team *domain.Team, membe
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO teams (id, name, slug, plan)
 		VALUES ($1, $2, $3, $4)

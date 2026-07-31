@@ -184,7 +184,7 @@ func (h *ContactHandler) ImportCSV(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "file is required", http.StatusBadRequest)
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader := csv.NewReader(file)
 	reader.LazyQuotes = true
@@ -253,7 +253,7 @@ func (h *ContactHandler) ImportCSV(w http.ResponseWriter, r *http.Request) {
 }
 
 func parseJSON(r *http.Request, v any) error {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	return json.NewDecoder(r.Body).Decode(v)
 }
 

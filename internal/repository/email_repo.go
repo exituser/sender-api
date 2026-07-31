@@ -58,14 +58,14 @@ func (r *EmailRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Email, e
 		return nil, err
 	}
 
-	json.Unmarshal(toJSON, &email.To)
-	json.Unmarshal(ccJSON, &email.CC)
-	json.Unmarshal(bccJSON, &email.BCC)
-	json.Unmarshal(replyToJSON, &email.ReplyTo)
-	json.Unmarshal(attachmentsJSON, &email.Attachments)
-	json.Unmarshal(tagsJSON, &email.Tags)
-	json.Unmarshal(metadataJSON, &email.Metadata)
-	json.Unmarshal(headersJSON, &email.Headers)
+	_ = json.Unmarshal(toJSON, &email.To)
+	_ = json.Unmarshal(ccJSON, &email.CC)
+	_ = json.Unmarshal(bccJSON, &email.BCC)
+	_ = json.Unmarshal(replyToJSON, &email.ReplyTo)
+	_ = json.Unmarshal(attachmentsJSON, &email.Attachments)
+	_ = json.Unmarshal(tagsJSON, &email.Tags)
+	_ = json.Unmarshal(metadataJSON, &email.Metadata)
+	_ = json.Unmarshal(headersJSON, &email.Headers)
 
 	return &email, nil
 }
@@ -147,7 +147,7 @@ func (r *EmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset in
 		if err != nil {
 			return nil, err
 		}
-		json.Unmarshal(toJSON, &email.To)
+		_ = json.Unmarshal(toJSON, &email.To)
 		emails = append(emails, email)
 	}
 	if err := rows.Err(); err != nil {
@@ -225,7 +225,7 @@ func (r *EmailRepo) GetEvents(ctx context.Context, emailID uuid.UUID) ([]domain.
 		if err != nil {
 			return nil, err
 		}
-		json.Unmarshal(dataJSON, &event.Data)
+		_ = json.Unmarshal(dataJSON, &event.Data)
 		events = append(events, event)
 	}
 	return events, rows.Err()
@@ -251,7 +251,7 @@ func (r *EmailRepo) GetEventsForTeam(ctx context.Context, teamID, emailID uuid.U
 		if err := rows.Scan(&event.ID, &event.EmailID, &event.Event, &event.Timestamp, &dataJSON, &event.IPAddress, &event.UserAgent); err != nil {
 			return nil, err
 		}
-		json.Unmarshal(dataJSON, &event.Data)
+		_ = json.Unmarshal(dataJSON, &event.Data)
 		events = append(events, event)
 	}
 	return events, rows.Err()
