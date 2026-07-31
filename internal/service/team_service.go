@@ -2,14 +2,20 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sender-api/sender-api/internal/domain"
 	"github.com/sender-api/sender-api/pkg/validator"
 )
+
+const teamInvitationTTL = 7 * 24 * time.Hour
 
 type TeamService struct {
 	teamRepo domain.TeamRepository
@@ -17,6 +23,9 @@ type TeamService struct {
 }
 
 func NewTeamService(teamRepo domain.TeamRepository, logger *slog.Logger) *TeamService {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &TeamService{
 		teamRepo: teamRepo,
 		logger:   logger,
@@ -97,33 +106,64 @@ func (s *TeamService) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.teamRepo.Delete(ctx, id)
 }
 
-func (s *TeamService) AddMember(ctx context.Context, teamID uuid.UUID, req *domain.InviteMemberRequest) (*domain.TeamMember, error) {
+func (s *TeamService) CreateInvitation(ctx context.Context, teamID uuid.UUID, req *domain.InviteMemberRequest) (*domain.CreateInvitationResponse, error) {
 	if req == nil {
-		return nil, fmt.Errorf("member request is required")
+		return nil, fmt.Errorf("invitation request is required")
 	}
-	if !validator.IsValidEmail(req.Email) {
-		return nil, fmt.Errorf("invalid member email")
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if !validator.IsValidEmail(email) {
+		return nil, fmt.Errorf("invalid invitation email")
 	}
 	if req.Role != domain.TeamMemberRoleAdmin && req.Role != domain.TeamMemberRoleMember {
 		return nil, fmt.Errorf("members can only be invited as admin or member")
 	}
-	userID, err := s.teamRepo.GetUserIDByEmail(ctx, req.Email)
+	token, err := newInvitationToken()
 	if err != nil {
-		return nil, fmt.Errorf("user must sign up before being invited")
+		return nil, fmt.Errorf("generate invitation token: %w", err)
 	}
-	member := &domain.TeamMember{
-		ID:     uuid.New(),
-		TeamID: teamID,
-		UserID: userID,
-		Role:   req.Role,
+	tokenHash := sha256.Sum256([]byte(token))
+	invitation := &domain.TeamInvitation{
+		ID:        uuid.New(),
+		TeamID:    teamID,
+		Email:     email,
+		Role:      req.Role,
+		TokenHash: fmt.Sprintf("%x", tokenHash),
+		Status:    domain.TeamInvitationStatusPending,
+		ExpiresAt: time.Now().UTC().Add(teamInvitationTTL),
 	}
+	if err := s.teamRepo.CreateInvitation(ctx, invitation); err != nil {
+		return nil, fmt.Errorf("failed to create invitation: %w", err)
+	}
+	s.logger.Info("team invitation created", "team_id", teamID, "role", req.Role)
+	return &domain.CreateInvitationResponse{Invitation: *invitation, Token: token}, nil
+}
 
-	if err := s.teamRepo.AddMember(ctx, member); err != nil {
-		return nil, fmt.Errorf("failed to add member: %w", err)
-	}
+func (s *TeamService) ListInvitations(ctx context.Context, teamID uuid.UUID) ([]domain.TeamInvitation, error) {
+	return s.teamRepo.ListInvitations(ctx, teamID)
+}
 
-	s.logger.Info("member added", "team_id", teamID, "role", req.Role)
-	return member, nil
+func (s *TeamService) RevokeInvitation(ctx context.Context, teamID, invitationID uuid.UUID) error {
+	return s.teamRepo.RevokeInvitation(ctx, teamID, invitationID)
+}
+
+func (s *TeamService) AcceptInvitation(ctx context.Context, token string, userID uuid.UUID) (*domain.TeamInvitation, error) {
+	if userID == uuid.Nil || strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("invitation is invalid or expired")
+	}
+	tokenHash := sha256.Sum256([]byte(token))
+	invitation, err := s.teamRepo.AcceptInvitation(ctx, fmt.Sprintf("%x", tokenHash), userID)
+	if err != nil {
+		return nil, fmt.Errorf("invitation is invalid or expired")
+	}
+	return invitation, nil
+}
+
+func newInvitationToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func (s *TeamService) GetMember(ctx context.Context, teamID, userID uuid.UUID) (*domain.TeamMember, error) {

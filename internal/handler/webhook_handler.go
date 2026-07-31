@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -26,7 +28,11 @@ type WebhookRepository interface {
 }
 
 type WebhookHandler struct {
-	webhookRepo  WebhookRepository
+	webhookRepo    WebhookRepository
+	deliveryReader interface {
+		ListForWebhook(context.Context, uuid.UUID, uuid.UUID, int) ([]domain.WebhookDelivery, error)
+		CreateDelivery(context.Context, *domain.WebhookDelivery) error
+	}
 	requireHTTPS bool
 }
 
@@ -35,10 +41,19 @@ func NewWebhookHandler(webhookRepo WebhookRepository, requireHTTPS ...bool) *Web
 	return &WebhookHandler{webhookRepo: webhookRepo, requireHTTPS: production}
 }
 
+func (h *WebhookHandler) SetDeliveryReader(reader interface {
+	ListForWebhook(context.Context, uuid.UUID, uuid.UUID, int) ([]domain.WebhookDelivery, error)
+	CreateDelivery(context.Context, *domain.WebhookDelivery) error
+}) {
+	h.deliveryReader = reader
+}
+
 func (h *WebhookHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.Create)
 	r.Get("/", h.List)
+	r.Get("/{id}/deliveries", h.ListDeliveries)
+	r.Post("/{id}/test", h.Test)
 	r.Get("/{id}", h.GetByID)
 	r.Patch("/{id}", h.Update)
 	r.Delete("/{id}", h.Delete)
@@ -241,4 +256,105 @@ func (h *WebhookHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *WebhookHandler) ListDeliveries(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
+	if h.deliveryReader == nil {
+		writeError(w, "webhook delivery history is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	_, teamID, ok := getTeamID(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.webhookRepo.GetByIDForTeam(r.Context(), teamID, id); err != nil {
+		writeError(w, "webhook not found", http.StatusNotFound)
+		return
+	}
+
+	limit := 50
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		parsedLimit, parseErr := strconv.Atoi(rawLimit)
+		if parseErr != nil || parsedLimit < 1 || parsedLimit > 100 {
+			writeError(w, "limit must be between 1 and 100", http.StatusBadRequest)
+			return
+		}
+		limit = parsedLimit
+	}
+	deliveries, err := h.deliveryReader.ListForWebhook(r.Context(), teamID, id, limit)
+	if err != nil {
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"data": deliveries}, http.StatusOK)
+}
+
+func (h *WebhookHandler) Test(w http.ResponseWriter, r *http.Request) {
+	if !requireRoles(w, r, "owner", "admin") {
+		return
+	}
+	if h.deliveryReader == nil {
+		writeError(w, "webhook delivery queue is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	_, teamID, ok := getTeamID(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	webhook, err := h.webhookRepo.GetByIDForTeam(r.Context(), teamID, id)
+	if err != nil {
+		writeError(w, "webhook not found", http.StatusNotFound)
+		return
+	}
+	if !webhook.Active {
+		writeError(w, "webhook is disabled", http.StatusConflict)
+		return
+	}
+
+	eventID := uuid.New()
+	payload, err := json.Marshal(map[string]any{
+		"id":         eventID,
+		"type":       "webhook.test",
+		"webhook_id": webhook.ID,
+		"team_id":    teamID,
+		"created_at": time.Now().UTC(),
+		"data": map[string]any{
+			"message": "This is a test webhook delivery.",
+		},
+	})
+	if err != nil {
+		writeError(w, "failed to create test payload", http.StatusInternalServerError)
+		return
+	}
+	delivery := &domain.WebhookDelivery{
+		ID:        uuid.New(),
+		WebhookID: webhook.ID,
+		EventID:   eventID,
+		Event:     "webhook.test",
+		Payload:   payload,
+		Status:    domain.WebhookDeliveryPending,
+	}
+	if err := h.deliveryReader.CreateDelivery(r.Context(), delivery); err != nil {
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"id":       delivery.ID,
+		"event_id": delivery.EventID,
+		"status":   domain.WebhookDeliveryPending,
+		"message":  "test delivery queued",
+	}, http.StatusAccepted)
 }

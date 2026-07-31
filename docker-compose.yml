@@ -20,6 +20,13 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SES_CONFIGSET: ${AWS_SES_CONFIGSET:-}
       OUTBOUND_SES_TOPIC_ARN: ${OUTBOUND_SES_TOPIC_ARN:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PRICE_SCALE: ${STRIPE_PRICE_SCALE:-}
+      STRIPE_SUCCESS_URL: ${STRIPE_SUCCESS_URL:-http://localhost:3000/settings/billing?success=1}
+      STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL:-http://localhost:3000/settings/billing?cancelled=1}
+      STRIPE_RETURN_URL: ${STRIPE_RETURN_URL:-http://localhost:3000/settings/billing}
       SUPABASE_URL: ${SUPABASE_URL:-http://localhost:54321}
       SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
@@ -72,6 +79,13 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SES_CONFIGSET: ${AWS_SES_CONFIGSET:-}
       OUTBOUND_SES_TOPIC_ARN: ${OUTBOUND_SES_TOPIC_ARN:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PRICE_SCALE: ${STRIPE_PRICE_SCALE:-}
+      STRIPE_SUCCESS_URL: ${STRIPE_SUCCESS_URL:-http://localhost:3000/settings/billing?success=1}
+      STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL:-http://localhost:3000/settings/billing?cancelled=1}
+      STRIPE_RETURN_URL: ${STRIPE_RETURN_URL:-http://localhost:3000/settings/billing}
       INBOUND_S3_BUCKET: ${INBOUND_S3_BUCKET:-sender-api-inbound}
       INBOUND_SQS_QUEUE_URL: ${INBOUND_SQS_QUEUE_URL:-}
       INBOUND_SNS_TOPIC_ARN: ${INBOUND_SNS_TOPIC_ARN:-}
@@ -151,7 +165,11 @@ services:
       - ./migrations/003_hardening.up.sql:/docker-entrypoint-initdb.d/03_hardening.sql
       - ./migrations/004_inbound_mx.up.sql:/docker-entrypoint-initdb.d/04_inbound_mx.sql
       - ./migrations/005_public_access_hardening.up.sql:/docker-entrypoint-initdb.d/05_public_access_hardening.sql
-      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/06_compose_version.sql
+      - ./migrations/006_suppressions.up.sql:/docker-entrypoint-initdb.d/06_suppressions.sql
+      - ./migrations/007_team_invitations.up.sql:/docker-entrypoint-initdb.d/07_team_invitations.sql
+      - ./migrations/008_ses_domain_identity.up.sql:/docker-entrypoint-initdb.d/08_ses_domain_identity.sql
+      - ./migrations/009_billing_state.up.sql:/docker-entrypoint-initdb.d/09_billing_state.sql
+      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/10_compose_version.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-supabase_admin} -d $${POSTGRES_DB:-sender_api}"]
       interval: 5s

@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/sender-api/sender-api/internal/auth"
+	"github.com/sender-api/sender-api/internal/billing"
 	"github.com/sender-api/sender-api/internal/config"
 	"github.com/sender-api/sender-api/internal/handler"
 	"github.com/sender-api/sender-api/internal/mailer"
@@ -127,6 +128,7 @@ func main() {
 	inboundRepo := repository.NewInboundEmailRepo(dbPool)
 	webhookRepo := repository.NewWebhookRepo(dbPool)
 	webhookDeliveryRepo := repository.NewWebhookDeliveryRepo(dbPool)
+	suppressionRepo := repository.NewSuppressionRepo(dbPool)
 
 	auth.SetVerifyAPIKeyContextFunc(func(ctx context.Context, rawKey string) (*auth.APIKeyContext, error) {
 		verification, err := apiKeyRepo.VerifyAPIKey(ctx, rawKey)
@@ -174,11 +176,15 @@ func main() {
 
 	sesMailer := mailer.NewSESMailer(sesClient, cfg.AWSESConfigSet, logger)
 
-	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger)
+	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger, suppressionRepo)
 	emailService.SetUsageLimiter(queue.NewRedisUsageLimiter(redisClient), cfg.DailyRecipientLimit)
+	emailService.SetPlanResolver(teamRepo, cfg.PlanFreeDailyLimit, cfg.PlanProDailyLimit, cfg.PlanScaleDailyLimit)
 	teamService := service.NewTeamService(teamRepo, logger)
 	contactService := service.NewContactService(contactRepo, logger)
-	domainService := service.NewDomainService(domainRepo, logger, cfg.AWSRegion)
+	sesIdentityProvider := mailer.NewSESIdentityProvider(sesClient, cfg.AWSESConfigSet)
+	domainService := service.NewDomainService(domainRepo, logger, cfg.AWSRegion, sesIdentityProvider)
+	stripeClient := billing.NewStripeClient(cfg.StripeSecretKey, cfg.StripeWebhookSecret, cfg.StripePricePro, cfg.StripePriceScale, cfg.StripeSuccessURL, cfg.StripeCancelURL, cfg.StripeReturnURL)
+	billingService := service.NewBillingService(teamRepo, teamRepo, stripeClient, logger)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
 
 	emailHandler := handler.NewEmailHandler(emailService)
@@ -187,8 +193,10 @@ func main() {
 	domainHandler := handler.NewDomainHandler(domainService)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyRepo)
 	webhookHandler := handler.NewWebhookHandler(webhookRepo, cfg.IsProduction())
+	webhookHandler.SetDeliveryReader(webhookDeliveryRepo)
 	inboundHandler := handler.NewInboundHandler(inboundService, cfg.InboundWebhookToken, cfg.AWSRegion, cfg.InboundSNSTopicArn)
 	sesEventHandler := handler.NewSESEventHandler(emailService, cfg.AWSRegion, cfg.OutboundSESTopicArn)
+	billingHandler := handler.NewBillingHandler(billingService)
 
 	r := chi.NewRouter()
 
@@ -248,6 +256,12 @@ func main() {
 			sesEventHandler.Handle,
 		)
 	}
+	if cfg.StripeWebhookSecret != "" {
+		r.With(pkgmiddleware.RateLimit(redisClient)).Post(
+			"/api/v1/webhooks/stripe",
+			billingHandler.HandleWebhook,
+		)
+	}
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(auth.AuthMiddleware)
@@ -259,6 +273,7 @@ func main() {
 		r.Mount("/domains", domainHandler.Routes())
 		r.Mount("/api-keys", apiKeyHandler.Routes())
 		r.Mount("/webhooks", webhookHandler.Routes())
+		r.Mount("/billing", billingHandler.Routes())
 		r.Mount("/inbound", inboundHandler.Routes())
 	})
 

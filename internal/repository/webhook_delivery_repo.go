@@ -93,3 +93,45 @@ func (r *WebhookDeliveryRepo) RecoverStale(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ListForWebhook returns delivery attempts for a webhook owned by teamID.
+// Joining webhooks here keeps the tenant boundary in the query instead of
+// relying on the handler to perform a second, race-prone ownership check.
+func (r *WebhookDeliveryRepo) ListForWebhook(ctx context.Context, teamID, webhookID uuid.UUID, limit int) ([]domain.WebhookDelivery, error) {
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT d.id, d.webhook_id, d.event_id, d.event, d.payload, d.status,
+			d.attempts, d.next_attempt_at, d.last_error, d.created_at, d.delivered_at
+		FROM webhook_deliveries d
+		JOIN webhooks w ON w.id = d.webhook_id
+		WHERE w.team_id = $1 AND d.webhook_id = $2
+		ORDER BY d.created_at DESC
+		LIMIT $3
+	`, teamID, webhookID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list webhook deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	deliveries := make([]domain.WebhookDelivery, 0)
+	for rows.Next() {
+		var delivery domain.WebhookDelivery
+		if err := rows.Scan(
+			&delivery.ID, &delivery.WebhookID, &delivery.EventID, &delivery.Event,
+			&delivery.Payload, &delivery.Status, &delivery.Attempts, &delivery.NextAttemptAt,
+			&delivery.LastError, &delivery.CreatedAt, &delivery.DeliveredAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan webhook delivery: %w", err)
+		}
+		deliveries = append(deliveries, delivery)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate webhook deliveries: %w", err)
+	}
+	return deliveries, nil
+}

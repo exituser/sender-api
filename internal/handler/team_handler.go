@@ -49,10 +49,13 @@ func (h *TeamHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.Create)
 	r.Get("/", h.List)
+	r.Post("/invitations/accept", h.AcceptInvitation)
 	r.Get("/{id}", h.GetByID)
 	r.Patch("/{id}", h.Update)
 	r.Delete("/{id}", h.Delete)
 	r.Post("/{id}/invite", h.InviteMember)
+	r.Get("/{id}/invitations", h.ListInvitations)
+	r.Delete("/{id}/invitations/{invitationId}", h.RevokeInvitation)
 	r.Delete("/{id}/members/{userId}", h.RemoveMember)
 	r.Patch("/{id}/members/{userId}/role", h.UpdateMemberRole)
 	r.Get("/{id}/members", h.GetMembers)
@@ -193,13 +196,78 @@ func (h *TeamHandler) InviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	member, err := h.teamService.AddMember(r.Context(), teamID, &req)
+	invitation, err := h.teamService.CreateInvitation(r.Context(), teamID, &req)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	writeJSON(w, member, http.StatusCreated)
+	writeJSON(w, invitation, http.StatusCreated)
+}
+
+func (h *TeamHandler) ListInvitations(w http.ResponseWriter, r *http.Request) {
+	teamID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid team id", http.StatusBadRequest)
+		return
+	}
+	if !h.authorizeTeam(w, r, teamID, "owner", "admin") {
+		return
+	}
+	invitations, err := h.teamService.ListInvitations(r.Context(), teamID)
+	if err != nil {
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, invitations, http.StatusOK)
+}
+
+func (h *TeamHandler) RevokeInvitation(w http.ResponseWriter, r *http.Request) {
+	teamID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid team id", http.StatusBadRequest)
+		return
+	}
+	if !h.authorizeTeam(w, r, teamID, "owner", "admin") {
+		return
+	}
+	invitationID, err := uuid.Parse(chi.URLParam(r, "invitationId"))
+	if err != nil {
+		writeError(w, "invalid invitation id", http.StatusBadRequest)
+		return
+	}
+	if err := h.teamService.RevokeInvitation(r.Context(), teamID, invitationID); err != nil {
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *TeamHandler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := getClaims(w, r)
+	if !ok {
+		return
+	}
+	if claims.Role == "api_key" {
+		writeError(w, "api keys cannot accept invitations", http.StatusForbidden)
+		return
+	}
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		writeError(w, "invalid user id", http.StatusUnauthorized)
+		return
+	}
+	var req domain.AcceptInvitationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	invitation, err := h.teamService.AcceptInvitation(r.Context(), req.Token, userID)
+	if err != nil {
+		writeError(w, "invitation is invalid or expired", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, invitation, http.StatusOK)
 }
 
 func (h *TeamHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
