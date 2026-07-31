@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a reproducible defect in Sender API.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, tokens, private email addresses, or production data.
+        Security vulnerabilities belong in the private process described in SECURITY.md.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+      placeholder: Short description of the defect
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest safe reproduction.
+      placeholder: |
+        1. Configure ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include versions and deployment mode, but redact secrets.
+      placeholder: Go, Node.js, OS, Docker/host process, database/Redis version
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: shell
