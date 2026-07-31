@@ -2,7 +2,6 @@
 
 > Email API for developers — open-source alternative to Resend, built on Amazon SES.
 
-[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 [![License](LICENSE)](LICENSE)
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Support](SUPPORT.md)
@@ -11,8 +10,8 @@
 
 ### Prerequisites
 
-- Go 1.25+
-- Node.js 22+ (for the web app)
+- Go 1.26+
+- Node.js 24+ (for the web app)
 - Docker & Docker Compose
 - PostgreSQL (or Supabase)
 - Redis
@@ -54,6 +53,9 @@ docker build -f docker/Dockerfile.worker -t sender-worker .
 
 Base URL: `http://localhost:8080/api/v1`
 
+Machine-readable contract: [`openapi.yaml`](openapi.yaml). Runtime probes are
+available at `/health`, `/readyz`, and `/metrics`.
+
 ### Authentication
 
 Two auth methods:
@@ -66,6 +68,11 @@ Two auth methods:
 JWT requests to team-scoped endpoints must include `X-Team-ID`. API keys are
 bound to one team and use the permissions stored with the key (`send`, `read`,
 or `*`). Requests without a verified team context are rejected.
+
+`POST /emails` accepts an optional `Idempotency-Key` header. Reusing a key with
+different request data returns `409`; reusing it with the same data returns the
+original email ID without queuing a second message. The `From` domain must be
+verified and owned by the active team.
 
 ### Emails
 
@@ -133,28 +140,45 @@ or `*`). Requests without a verified team context are rejected.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/inbound/ses` | SES notification endpoint; requires `X-Inbound-Token` |
+| `POST` | `/inbound/ses` | SES/SNS inbound notification endpoint; legacy direct payloads require `X-Inbound-Token` |
 | `GET` | `/inbound` | Authenticated, team-scoped inbound message list |
 
-Set `INBOUND_WEBHOOK_TOKEN` before configuring SES/SNS to call the POST
-endpoint. The endpoint fails closed with `503` when the token is not
-configured; it does not accept a JWT in place of the webhook token.
-The current endpoint accepts an SES/SNS notification containing the raw
-message; `INBOUND_S3_BUCKET` and `INBOUND_SQS_QUEUE_URL` are reserved settings
-and are not consumed by this version. Native SNS signature verification and
-S3/SQS ingestion are therefore not claimed as implemented.
+SES/SNS `Notification` payloads are verified against the AWS SNS signing
+certificate and a five-minute timestamp window. Configure
+`INBOUND_S3_BUCKET`, `INBOUND_SQS_QUEUE_URL`, and the exact
+`INBOUND_SNS_TOPIC_ARN` to enable the worker path that verifies SNS, downloads
+raw messages from S3, and acknowledges SQS only after a successful database
+write. Direct raw-payload calls are retained for local or legacy integrations
+and require `X-Inbound-Token`; they are not a substitute for SNS verification
+in production.
+
+Outbound SES event publishing can use `POST /api/v1/webhooks/ses`. Configure an
+SES Configuration Set SNS destination and set `OUTBOUND_SES_TOPIC_ARN`; the
+endpoint verifies the SNS signature and correlates the SES `mail.messageId`
+returned by SES with the stored email. SES publishes event types such as Send,
+Delivery, Bounce, Complaint, Open, and Click through event publishing.
+Production also requires the exact inbound and outbound SNS topic ARNs, so a
+valid SNS signature from another topic is rejected.
 
 ### Migrations
 
-The first migration creates a fresh database schema. `002_delivery` adds the
-delivery fields to an existing installation. Apply both with:
+The first migration creates a fresh database schema. `002_delivery` is kept as
+a compatibility migration, and `003_hardening` adds tenant ownership,
+idempotency, indexes, inbound deduplication, sending recovery timestamps, and
+durable webhook deliveries.
+Apply all migrations with:
 
 ```bash
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/sender_api make migrate-up
+DATABASE_URL=postgresql://supabase_admin:postgres@localhost:5432/sender_api make migrate-up
 ```
 
-The Compose database is initialized from `migrations/001_initial.up.sql`; use
-the migration command for an already-existing database.
+The Compose database is initialized from `migrations/001_initial.up.sql` and
+`migrations/003_hardening.up.sql`; its `schema_migrations` marker is set to
+version 3. Use the migration command for an already-existing database. Compose
+initialization only runs for a new database volume. Existing installations with
+duplicate normalized domains or nullable tenant IDs must be reviewed before
+applying `003_hardening`; the migration fails rather than silently rewriting
+them.
 
 ## Quality checks
 

@@ -1,0 +1,193 @@
+openapi: 3.1.0
+info:
+  title: Sender API
+  version: 0.1.0
+  description: Multi-tenant email API backed by Amazon SES.
+servers:
+  - url: http://localhost:8080/api/v1
+security:
+  - bearerAuth: []
+paths:
+  /emails:
+    get:
+      summary: List emails
+      parameters:
+        - $ref: '#/components/parameters/TeamID'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200': { $ref: '#/components/responses/EmailList' }
+    post:
+      summary: Queue an email
+      parameters:
+        - $ref: '#/components/parameters/TeamID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody: { $ref: '#/components/requestBodies/SendEmail' }
+      responses:
+        '201': { $ref: '#/components/responses/EmailCreated' }
+        '200': { $ref: '#/components/responses/EmailCreated' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /emails/batch:
+    post:
+      summary: Queue multiple emails
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              maxItems: 100
+              items: { $ref: '#/components/schemas/SendEmailRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/JSON' }
+  /emails/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/TeamID'
+    get:
+      summary: Get an email
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    delete:
+      summary: Cancel a queued email
+      responses: { '204': { description: Cancelled } }
+  /emails/{id}/events:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/TeamID'
+    get:
+      summary: List email events
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /teams:
+    get:
+      summary: List teams for the current user
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    post:
+      summary: Create a team
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /contacts:
+    get:
+      summary: List contacts
+      parameters: [ { $ref: '#/components/parameters/TeamID' }, { $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Offset' } ]
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    post:
+      summary: Create a contact
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /contacts/import:
+    post:
+      summary: Import contacts from CSV
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data: { schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } } }
+      responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /domains:
+    get:
+      summary: List sender domains
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    post:
+      summary: Claim a sender domain
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /domains/{id}/verify:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/TeamID'
+    post:
+      summary: Verify DNS records for a domain
+      responses: { '204': { description: Verification complete } }
+  /api-keys:
+    get:
+      summary: List API keys
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    post:
+      summary: Create an API key
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /webhooks:
+    get:
+      summary: List webhooks
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    post:
+      summary: Create a webhook
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /inbound:
+    get:
+      summary: List inbound emails
+      parameters: [ { $ref: '#/components/parameters/TeamID' }, { $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Offset' } ]
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /inbound/ses:
+    post:
+      summary: Receive an SES inbound SNS notification
+      security: []
+      responses:
+        '200': { $ref: '#/components/responses/JSON' }
+        '401': { $ref: '#/components/responses/Error' }
+  /webhooks/ses:
+    post:
+      summary: Receive an SES outbound event notification
+      security: []
+      responses:
+        '200': { $ref: '#/components/responses/JSON' }
+        '401': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT or re_ API key
+  parameters:
+    ID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    TeamID: { name: X-Team-ID, in: header, required: false, description: Required for JWT requests; API keys already identify their team., schema: { type: string, format: uuid } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: false, schema: { type: string, maxLength: 255 } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+    Offset: { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+  requestBodies:
+    JSON:
+      required: true
+      content: { application/json: { schema: { type: object } } }
+    SendEmail:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/SendEmailRequest' } } }
+  responses:
+    JSON: { description: JSON response, content: { application/json: { schema: {} } } }
+    Error: { description: Error response, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    EmailList: { description: Email list, content: { application/json: { schema: { type: object } } } }
+    EmailCreated: { description: Queued email, content: { application/json: { schema: { $ref: '#/components/schemas/EmailResponse' } } } }
+    Conflict: { description: Idempotency conflict, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  schemas:
+    SendEmailRequest:
+      type: object
+      required: [from, to, subject]
+      properties:
+        from: { type: string, format: email }
+        to: { type: array, minItems: 1, maxItems: 50, items: { type: string, format: email } }
+        cc: { type: array, items: { type: string, format: email } }
+        bcc: { type: array, items: { type: string, format: email } }
+        subject: { type: string, maxLength: 998 }
+        text: { type: string }
+        html: { type: string }
+        scheduled_at: { type: string, format: date-time }
+    EmailResponse:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid }
+        idempotent: { type: boolean }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }

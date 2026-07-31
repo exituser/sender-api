@@ -2,11 +2,17 @@
 
 > Email API для разработчиков на базе Amazon SES. Open-source альтернатива Resend.
 
-> **Статус реализации:** документ описывает целевую архитектуру и содержит
-> проектные примеры. Фактический текущий контракт зафиксирован в
-> [README.md](README.md): Go API сейчас использует прямой `pgx`, SES v2 и
-> Redis; inbound работает через защищённый token endpoint. S3/SQS/SNS-адаптер,
-> `go-mail`, `sqlc` и Go-библиотека миграций пока не подключены.
+> **Статус реализации:** документ сохраняет целевую архитектуру и проектные
+> примеры. Фактический текущий контракт зафиксирован в [README.md](README.md):
+> Go API использует прямой `pgx`, SES v2 и Redis; inbound поддерживает SNS с
+> проверкой подписи, S3/SQS worker path и защищённый legacy token endpoint.
+> `go-mail`, `sqlc` и Go-библиотека миграций по-прежнему не подключены.
+
+> **Фактическое состояние на июль 2026:** локальный backend, worker, frontend,
+> durable queues/webhooks, inbound SNS/S3/SQS path, OpenAPI, Docker hardening и
+> GitHub CI уже реализованы. Неподтверждёнными остаются только внешние
+> production-операции: AWS/Supabase credentials, SES receipt rules, DNS,
+> Hetzner/Cloudflare и фактический live rollout.
 
 ---
 
@@ -39,7 +45,7 @@
 | **БД** | Supabase (PostgreSQL) | Managed PostgreSQL + Auth + RLS + Realtime |
 | **Auth** | Supabase Auth | Email/password + GitHub OAuth, JWT токены |
 | **Email** | AWS SES v2 | Дешево, масштабируемо, надежно |
-| **MIME** | wneissen/go-mail | Современная библиотека для конструирования писем |
+| **MIME** | SES v2 Simple message + стандартная библиотека | Конструирование писем без лишнего runtime-пакета |
 | **Очередь** | Redis | Async отправка, буферизация |
 | **Frontend** | Next.js + TS + Tailwind v4 + shadcn | Современный DX, компоненты |
 | **Мульти-тенантность** | Teams | Разделение данных по командам |
@@ -52,8 +58,8 @@
 | **Планировщик** | ❌ v2 | Отложено |
 | **Open/Click Tracking** | ❌ v2 | Отложено |
 | **Оплата** | ❌ v2 | Пока внутренний инструмент |
-| **Тесты** | ❌ v2 | Пока без |
-| **CI/CD** | Ручной деплой | Автоматизации позже |
+| **Тесты** | ✅ реализовано | Unit-тесты, race checks и migration smoke check в CI |
+| **CI/CD** | GitHub Actions | Проверки и CodeQL; production deploy остаётся ручным |
 
 ---
 
@@ -65,16 +71,16 @@
 |-----------|-------|------------|
 | Веб-фреймворк | `github.com/go-chi/chi/v5` | HTTP роутинг |
 | AWS SDK | `github.com/aws/aws-sdk-go-v2` | SES v2, S3, SQS, SNS |
-| MIME | `github.com/wneessen/go-mail` | Конструирование писем |
+| MIME | SES v2 Simple message | Конструирование писем |
 | PostgreSQL | `github.com/jackc/pgx/v5` | Direct SQL запросы |
-| SQL кодогенерация | `github.com/sqlc-dev/sqlc` | Type-safe SQL |
+| SQL | `pgx/v5` + repository SQL | Прямые параметризованные запросы |
 | JWT | `github.com/golang-jwt/jwt/v5` | Верификация Supabase JWT |
 | JWKS | `github.com/MicahParks/keyfunc/v3` | Асинхронная верификация ключей |
 | Redis | `github.com/redis/go-redis/v9` | Очередь сообщений |
 | Config | `github.com/joho/godotenv` | ENV переменные |
 | Logger | `log/slog` (stdlib) | Структурированное логирование |
 | UUID | `github.com/google/uuid` | Генерация UUID |
-| Migrations | `github.com/golang-migrate/migrate/v4` | Миграции БД |
+| Migrations | `golang-migrate` CLI | Версионируемые SQL-миграции |
 
 ### Frontend (Next.js)
 
@@ -97,7 +103,7 @@
 | Контейнеризация | Docker + Docker Compose | Локальная + продакшн |
 | Мониторинг | Sentry | Ошибки (Go + Next.js) |
 | Логирование | slog + Sentry | Структурированные логи |
-| CI/CD | Ручной деплой | Автоматизации позже |
+| CI/CD | GitHub Actions | Test, race, vet, build, frontend checks, Compose и CodeQL |
 
 ---
 
@@ -157,7 +163,7 @@
 5. Repository: сохранение в БД (status: queued)
 6. Queue: добавление в Redis
 7. Worker: извлечение из очереди
-8. Mailer: отправка через SES v2 (go-mail для MIME)
+8. Mailer: отправка через SES v2 Simple message
 9. Repository: обновление статуса (sent/failed)
 10. Webhook: уведомление клиента о статусе
 ```
@@ -827,38 +833,13 @@ func (m *SESMailer) Send(ctx context.Context, email *domain.Email) error {
 }
 ```
 
-### MIME конструирование (для вложений)
+### MIME и вложения
 
-```go
-// internal/mailer/mime.go
-import "github.com/wneessen/go-mail"
-
-func BuildMIMEMessage(email *domain.Email) ([]byte, error) {
-    msg := mail.NewMsg()
-    msg.From(email.From)
-    msg.To(email.To...)
-    msg.Subject(email.Subject)
-
-    if email.HTML != "" {
-        msg.SetBodyString(mail.TypeTextHTML, email.HTML)
-    }
-    if email.Text != "" {
-        msg.SetBodyString(mail.TypeTextPlain, email.Text)
-    }
-
-    // Вложения
-    for _, att := range email.Attachments {
-        msg.AttachFile(att.Filename, att.Content)
-    }
-
-    // Кастомные заголовки
-    for key, value := range email.Headers {
-        msg.SetHeader(key, value)
-    }
-
-    return msg.Bytes()
-}
-```
+Текущая реализация использует `sesv2.SendEmail` с `Simple`-сообщением:
+текстовая и HTML-части, вложения, кастомные заголовки и Configuration Set
+собираются в `internal/mailer/ses.go`. Отдельный `go-mail` runtime-пакет не
+нужен; ограничения размера и имена файлов проверяются до постановки письма
+в очередь.
 
 ### Redis очередь
 
@@ -1219,7 +1200,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/sender_api
+      - DATABASE_URL=postgresql://supabase_admin:postgres@db:5432/sender_api
       - REDIS_URL=redis:6379
       - AWS_REGION=us-east-1
       - SUPABASE_URL=http://localhost:54321
@@ -1233,7 +1214,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.worker
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/sender_api
+      - DATABASE_URL=postgresql://supabase_admin:postgres@db:5432/sender_api
       - REDIS_URL=redis:6379
       - AWS_REGION=us-east-1
     depends_on:
@@ -1251,7 +1232,7 @@ services:
       - NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 
   db:
-    image: supabase/postgres:15.1.0
+    image: supabase/postgres:17.6.1.136
     ports:
       - "5432:5432"
     environment:
@@ -1268,79 +1249,83 @@ services:
 
 ## Этапы реализации
 
+Галочка означает реализованный и проверенный локальный код. Пункты о
+внешних аккаунтах и production-инфраструктуре остаются открытыми до
+фактической настройки и live-проверки.
+
 ### Этап 1: Инфраструктура (1-2 дня)
 
-- [ ] Инициализация Go модуля
-- [ ] Настройка Docker Compose
-- [ ] Supabase проект + миграции
-- [ ] Redis подключение
-- [ ] Конфигурация (env)
-- [ ] Sentry интеграция
+- [x] Инициализация Go модуля
+- [x] Настройка Docker Compose
+- [x] Supabase-совместимая схема + миграции
+- [x] Redis подключение
+- [x] Конфигурация (env)
+- [x] Sentry интеграция
 
 ### Этап 2: Auth + Teams (2-3 дня)
 
-- [ ] Supabase Auth (email/password + GitHub)
-- [ ] JWT middleware в Go
-- [ ] API Key генерация
-- [ ] CRUD команд
-- [ ] Участники команд
+- [x] Supabase Auth contract (email/password + GitHub — внешний Supabase setup)
+- [x] JWT middleware в Go
+- [x] API Key генерация
+- [x] CRUD команд
+- [x] Участники команд
 
 ### Этап 3: Domains (1-2 дня)
 
-- [ ] CRUD доменов
-- [ ] Генерация DNS записей
-- [ ] Автоматическая верификация
+- [x] CRUD доменов
+- [x] Генерация DNS записей
+- [x] Автоматическая верификация
 - [ ] SES domain setup
 
 ### Этап 4: Email Sending (3-4 дня)
 
-- [ ] SES v2 интеграция
-- [ ] Redis очередь
-- [ ] Worker для отправки
-- [ ] Статусы писем
-- [ ] Теги и метаданные
+- [x] SES v2 интеграция
+- [x] Redis очередь
+- [x] Worker для отправки
+- [x] Статусы писем
+- [x] Теги и метаданные
 
 ### Этап 5: Contacts (1-2 дня)
 
-- [ ] CRUD контактов
-- [ ] Импорт CSV
-- [ ] Подписки (subscribed)
+- [x] CRUD контактов
+- [x] Импорт CSV
+- [x] Подписки (subscribed)
 
 ### Этап 6: Inbound (2-3 дня)
 
-- [ ] SES Receipt Rules
-- [ ] S3 bucket
-- [ ] SQS очередь
-- [ ] Go worker для парсинга
-- [ ] Сохранение в БД
+- [ ] SES Receipt Rules (внешняя AWS настройка)
+- [x] S3 bucket adapter
+- [x] SQS очередь adapter
+- [x] Go worker для парсинга
+- [x] Сохранение в БД
 
 ### Этап 7: Webhooks (1-2 дня)
 
-- [ ] CRUD клиентских webhook'ов
-- [ ] Верификация подписи
-- [ ] Отправка событий
-- [ ] Retries
+- [x] CRUD клиентских webhook'ов
+- [x] Верификация подписи
+- [x] Durable отправка событий
+- [x] Retries
 
 ### Этап 8: Frontend (5-7 дней)
 
-- [ ] Layout + навигация
-- [ ] Auth страницы
-- [ ] Dashboard (список писем)
-- [ ] Страницы: emails, contacts, domains, api-keys
-- [ ] Настройки команды
+- [x] Layout + навигация
+- [x] Auth страницы
+- [x] Dashboard (список писем)
+- [x] Страницы: emails, contacts, domains, api-keys
+- [x] Настройки команды
 
 ### Этап 9: Деплой (2-3 дня)
 
-- [ ] Hetzner сервер настройка
-- [ ] Docker Compose production
+- [ ] Hetzner сервер настройка (внешняя операция)
+- [x] Docker Compose production
 - [ ] Cloudflare proxy + SSL
 - [ ] Sentry production настройка
 
 ### Этап 10: Polish (2-3 дня)
 
-- [ ] Error handling
-- [ ] Logging
-- [ ] Documentation
+- [x] Error handling
+- [x] Logging
+- [x] Documentation
 
 ---
 
