@@ -15,13 +15,18 @@ type EmailWorker struct {
 	emailService *service.EmailService
 	queue        domain.EmailQueue
 	logger       *slog.Logger
+	pollInterval time.Duration
 }
 
-func NewEmailWorker(emailService *service.EmailService, queue domain.EmailQueue, logger *slog.Logger) *EmailWorker {
+func NewEmailWorker(emailService *service.EmailService, queue domain.EmailQueue, logger *slog.Logger, pollInterval time.Duration) *EmailWorker {
+	if pollInterval <= 0 {
+		pollInterval = time.Second
+	}
 	return &EmailWorker{
 		emailService: emailService,
 		queue:        queue,
 		logger:       logger,
+		pollInterval: pollInterval,
 	}
 }
 
@@ -34,14 +39,18 @@ func (w *EmailWorker) Start(ctx context.Context) {
 		w.logger.Error("failed to recover processing emails", "error", err)
 	}
 
+	lastPromotion := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
 			w.logger.Info("email worker stopped")
 			return
 		default:
-			if err := w.queue.PromoteScheduled(ctx); err != nil {
-				w.logger.Error("failed to promote scheduled emails", "error", err)
+			if lastPromotion.IsZero() || time.Since(lastPromotion) >= w.pollInterval {
+				if err := w.queue.PromoteScheduled(ctx); err != nil {
+					w.logger.Error("failed to promote scheduled emails", "error", err)
+				}
+				lastPromotion = time.Now()
 			}
 			w.processNext(ctx)
 		}

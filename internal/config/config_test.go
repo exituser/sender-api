@@ -34,7 +34,7 @@ func TestValidateRequiresInboundSNSTopicWithQueue(t *testing.T) {
 	}
 }
 
-func TestValidateProductionRequiresExactSNSTopics(t *testing.T) {
+func TestValidateProductionAllowsOptionalSNSIntegrations(t *testing.T) {
 	cfg := &Config{
 		Env:         "production",
 		CORSOrigins: "https://app.example.com",
@@ -44,12 +44,25 @@ func TestValidateProductionRequiresExactSNSTopics(t *testing.T) {
 		AWSRegion:   "eu-west-1",
 		Debug:       false,
 	}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected production SNS topic requirement")
-	}
-	cfg.InboundSNSTopicArn = "arn:aws:sns:eu-west-1:123:inbound"
-	cfg.OutboundSESTopicArn = "arn:aws:sns:eu-west-1:123:outbound"
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("expected complete production config to validate: %v", err)
+		t.Fatalf("expected production config without optional callbacks to validate: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidLowVolumeSettings(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{name: "database pool", cfg: Config{CORSOrigins: "http://localhost:3000", DBMaxConns: -1}},
+		{name: "redis pool", cfg: Config{CORSOrigins: "http://localhost:3000", RedisPoolSize: -1}},
+		{name: "trace sample rate", cfg: Config{CORSOrigins: "http://localhost:3000", SentryTraceSampleRate: 1.1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); err == nil {
+				t.Fatal("expected invalid low-volume setting to be rejected")
+			}
+		})
 	}
 }

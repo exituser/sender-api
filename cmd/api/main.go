@@ -45,7 +45,7 @@ func main() {
 		if err := sentry.Init(sentry.ClientOptions{
 			Dsn:              cfg.SentryDSN,
 			Environment:      cfg.Env,
-			TracesSampleRate: 0.2,
+			TracesSampleRate: cfg.SentryTraceSampleRate,
 		}); err != nil {
 			logger.Warn("failed to init Sentry", "error", err)
 		} else {
@@ -71,7 +71,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	dbPool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	dbConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("failed to parse database config", "error", err)
+		os.Exit(1)
+	}
+	dbConfig.MaxConns = int32(cfg.DBMaxConns)
+	dbConfig.MinConns = int32(cfg.DBMinConns)
+	dbPool, err := pgxpool.NewWithConfig(ctx, dbConfig)
 	if err != nil {
 		logger.Error("failed to connect to database", "error", err)
 		os.Exit(1)
@@ -85,9 +92,10 @@ func main() {
 	logger.Info("connected to database")
 
 	redisClient := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisURL,
+		Addr:     cfg.RedisURL,
+		PoolSize: cfg.RedisPoolSize,
 	})
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	redisReady := true
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -181,7 +189,6 @@ func main() {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
@@ -191,7 +198,7 @@ func main() {
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		readyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -206,28 +213,32 @@ func main() {
 		if !ready {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"status":"not_ready"}`))
+			_, _ = w.Write([]byte(`{"status":"not_ready"}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ready"}`))
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
 	r.Get("/metrics", metrics.Handler)
 
 	// Provider callbacks must be registered before authenticated resource mounts
 	// that share the /webhooks and /inbound prefixes.
-	r.With(
-		pkgmiddleware.RateLimit(redisClient),
-	).Post(
-		"/api/v1/inbound/ses",
-		inboundHandler.HandleSESPayload,
-	)
-	r.With(
-		pkgmiddleware.RateLimit(redisClient),
-	).Post(
-		"/api/v1/webhooks/ses",
-		sesEventHandler.Handle,
-	)
+	if cfg.InboundSQSQueueURL != "" || cfg.InboundSNSTopicArn != "" || cfg.InboundWebhookToken != "" {
+		r.With(
+			pkgmiddleware.RateLimit(redisClient),
+		).Post(
+			"/api/v1/inbound/ses",
+			inboundHandler.HandleSESPayload,
+		)
+	}
+	if cfg.OutboundSESTopicArn != "" {
+		r.With(
+			pkgmiddleware.RateLimit(redisClient),
+		).Post(
+			"/api/v1/webhooks/ses",
+			sesEventHandler.Handle,
+		)
+	}
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(auth.AuthMiddleware)

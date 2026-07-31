@@ -42,7 +42,14 @@ func main() {
 	startupCtx, startupCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer startupCancel()
 
-	dbPool, err := pgxpool.New(startupCtx, cfg.DatabaseURL)
+	dbConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("failed to parse database config", "error", err)
+		os.Exit(1)
+	}
+	dbConfig.MaxConns = int32(cfg.DBMaxConns)
+	dbConfig.MinConns = int32(cfg.DBMinConns)
+	dbPool, err := pgxpool.NewWithConfig(startupCtx, dbConfig)
 	if err != nil {
 		logger.Error("failed to connect to database", "error", err)
 		os.Exit(1)
@@ -54,9 +61,10 @@ func main() {
 	}
 
 	redisClient := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisURL,
+		Addr:     cfg.RedisURL,
+		PoolSize: cfg.RedisPoolSize,
 	})
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 	if err := redisClient.Ping(startupCtx).Err(); err != nil {
 		logger.Error("failed to connect to redis", "error", err)
 		os.Exit(1)
@@ -83,8 +91,8 @@ func main() {
 	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
 
-	emailWorker := worker.NewEmailWorker(emailService, redisQueue, logger)
-	webhookWorker := worker.NewWebhookWorker(webhookDeliveryRepo, logger)
+	emailWorker := worker.NewEmailWorker(emailService, redisQueue, logger, cfg.WorkerPollInterval)
+	webhookWorker := worker.NewWebhookWorker(webhookDeliveryRepo, logger, cfg.WorkerPollInterval)
 
 	var workers sync.WaitGroup
 	startWorker := func(run func(context.Context)) {

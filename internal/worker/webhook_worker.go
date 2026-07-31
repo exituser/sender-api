@@ -13,12 +13,16 @@ import (
 )
 
 type WebhookWorker struct {
-	repo   domain.WebhookDeliveryRepository
-	logger *slog.Logger
+	repo         domain.WebhookDeliveryRepository
+	logger       *slog.Logger
+	pollInterval time.Duration
 }
 
-func NewWebhookWorker(repo domain.WebhookDeliveryRepository, logger *slog.Logger) *WebhookWorker {
-	return &WebhookWorker{repo: repo, logger: logger}
+func NewWebhookWorker(repo domain.WebhookDeliveryRepository, logger *slog.Logger, pollInterval time.Duration) *WebhookWorker {
+	if pollInterval <= 0 {
+		pollInterval = time.Second
+	}
+	return &WebhookWorker{repo: repo, logger: logger, pollInterval: pollInterval}
 }
 
 func (w *WebhookWorker) Start(ctx context.Context) {
@@ -43,12 +47,12 @@ func (w *WebhookWorker) Start(ctx context.Context) {
 
 		delivery, err := w.repo.ClaimDelivery(ctx)
 		if errors.Is(err, pgx.ErrNoRows) {
-			sleepContext(ctx, time.Second)
+			sleepContext(ctx, w.pollInterval)
 			continue
 		}
 		if err != nil {
 			w.logger.Error("failed to claim webhook delivery", "error", err)
-			sleepContext(ctx, time.Second)
+			sleepContext(ctx, w.pollInterval)
 			continue
 		}
 

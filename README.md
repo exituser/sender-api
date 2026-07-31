@@ -152,13 +152,43 @@ write. Direct raw-payload calls are retained for local or legacy integrations
 and require `X-Inbound-Token`; they are not a substitute for SNS verification
 in production.
 
+The inbound adapter is optional. Leave `INBOUND_SQS_QUEUE_URL` and
+`INBOUND_SNS_TOPIC_ARN` empty for an outbound-only deployment; the API does not
+register the inbound callback unless the SQS adapter or direct webhook token is
+configured.
+
 Outbound SES event publishing can use `POST /api/v1/webhooks/ses`. Configure an
 SES Configuration Set SNS destination and set `OUTBOUND_SES_TOPIC_ARN`; the
 endpoint verifies the SNS signature and correlates the SES `mail.messageId`
 returned by SES with the stored email. SES publishes event types such as Send,
 Delivery, Bounce, Complaint, Open, and Click through event publishing.
-Production also requires the exact inbound and outbound SNS topic ARNs, so a
-valid SNS signature from another topic is rejected.
+This integration is optional. When `OUTBOUND_SES_TOPIC_ARN` is empty, the SES
+event callback is not registered. When it is set, the exact topic ARN is still
+checked, so disabling the integration does not weaken verification for enabled
+callbacks.
+
+### Low-volume profile
+
+For a small outbound workload, keep only SES, the application host, and the
+database/authentication service enabled. The values below reduce idle resource
+usage without changing delivery retries or email validation:
+
+```dotenv
+AWS_SES_CONFIGSET=
+OUTBOUND_SES_TOPIC_ARN=
+INBOUND_SQS_QUEUE_URL=
+INBOUND_SNS_TOPIC_ARN=
+SENTRY_TRACES_SAMPLE_RATE=0
+DB_MAX_CONNS=4
+DB_MIN_CONNS=0
+REDIS_POOL_SIZE=4
+WORKER_POLL_INTERVAL=5s
+```
+
+The worker interval trades up to a few seconds of idle webhook/scheduled-email
+latency for fewer database and Redis polls. Set it to `1s` when latency matters
+more than idle cost. Error reporting remains available with `SENTRY_DSN`; only
+distributed tracing is disabled by the low-volume default.
 
 ### Migrations
 

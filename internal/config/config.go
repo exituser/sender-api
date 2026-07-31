@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -17,8 +18,12 @@ type Config struct {
 	Debug       bool
 	CORSOrigins string
 
-	DatabaseURL string
-	RedisURL    string
+	DatabaseURL        string
+	RedisURL           string
+	DBMaxConns         int
+	DBMinConns         int
+	RedisPoolSize      int
+	WorkerPollInterval time.Duration
 
 	AWSRegion           string
 	AWSAccessKeyID      string
@@ -30,7 +35,8 @@ type Config struct {
 	SupabaseAnonKey    string
 	SupabaseServiceKey string
 
-	SentryDSN string
+	SentryDSN             string
+	SentryTraceSampleRate float64
 
 	InboundS3Bucket     string
 	InboundSQSQueueURL  string
@@ -39,7 +45,7 @@ type Config struct {
 }
 
 func Load() *Config {
-	godotenv.Load()
+	_ = godotenv.Load()
 
 	return &Config{
 		Port:        getEnv("PORT", "8080"),
@@ -47,8 +53,12 @@ func Load() *Config {
 		Debug:       getBoolEnv("DEBUG", true),
 		CORSOrigins: getEnv("CORS_ORIGINS", "http://localhost:3000"),
 
-		DatabaseURL: getEnv("DATABASE_URL", "postgresql://supabase_admin:postgres@localhost:5432/sender_api"),
-		RedisURL:    getEnv("REDIS_URL", "localhost:6379"),
+		DatabaseURL:        getEnv("DATABASE_URL", "postgresql://supabase_admin:postgres@localhost:5432/sender_api"),
+		RedisURL:           getEnv("REDIS_URL", "localhost:6379"),
+		DBMaxConns:         getPositiveIntEnv("DB_MAX_CONNS", 4),
+		DBMinConns:         getNonNegativeIntEnv("DB_MIN_CONNS", 0),
+		RedisPoolSize:      getPositiveIntEnv("REDIS_POOL_SIZE", 4),
+		WorkerPollInterval: getDurationEnv("WORKER_POLL_INTERVAL", 5*time.Second),
 
 		AWSRegion:           getEnv("AWS_REGION", "eu-west-1"),
 		AWSAccessKeyID:      os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -60,7 +70,8 @@ func Load() *Config {
 		SupabaseAnonKey:    os.Getenv("SUPABASE_ANON_KEY"),
 		SupabaseServiceKey: os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
 
-		SentryDSN: os.Getenv("SENTRY_DSN"),
+		SentryDSN:             os.Getenv("SENTRY_DSN"),
+		SentryTraceSampleRate: getFloatEnv("SENTRY_TRACES_SAMPLE_RATE", 0),
 
 		InboundS3Bucket:     getEnv("INBOUND_S3_BUCKET", "sender-api-inbound"),
 		InboundSQSQueueURL:  os.Getenv("INBOUND_SQS_QUEUE_URL"),
@@ -77,6 +88,21 @@ func (c *Config) Validate() error {
 	if err := validateCORSOrigins(c.CORSOrigins); err != nil {
 		return err
 	}
+	if c.DBMaxConns != 0 && c.DBMaxConns < 1 {
+		return fmt.Errorf("DB_MAX_CONNS must be at least 1")
+	}
+	if c.DBMinConns < 0 || (c.DBMaxConns != 0 && c.DBMinConns > c.DBMaxConns) {
+		return fmt.Errorf("DB_MIN_CONNS must be between 0 and DB_MAX_CONNS")
+	}
+	if c.RedisPoolSize != 0 && c.RedisPoolSize < 1 {
+		return fmt.Errorf("REDIS_POOL_SIZE must be at least 1")
+	}
+	if c.WorkerPollInterval < 0 {
+		return fmt.Errorf("WORKER_POLL_INTERVAL must not be negative")
+	}
+	if math.IsNaN(c.SentryTraceSampleRate) || c.SentryTraceSampleRate < 0 || c.SentryTraceSampleRate > 1 {
+		return fmt.Errorf("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1")
+	}
 	if c.IsProduction() {
 		if c.Debug {
 			return fmt.Errorf("DEBUG must be false in production")
@@ -91,12 +117,6 @@ func (c *Config) Validate() error {
 			if strings.TrimSpace(value) == "" {
 				return fmt.Errorf("%s is required in production", key)
 			}
-		}
-		if strings.TrimSpace(c.InboundSNSTopicArn) == "" {
-			return fmt.Errorf("INBOUND_SNS_TOPIC_ARN is required in production")
-		}
-		if strings.TrimSpace(c.OutboundSESTopicArn) == "" {
-			return fmt.Errorf("OUTBOUND_SES_TOPIC_ARN is required in production")
 		}
 	}
 	if c.InboundSQSQueueURL != "" && strings.TrimSpace(c.InboundS3Bucket) == "" {
@@ -152,6 +172,42 @@ func getBoolEnv(key string, fallback bool) bool {
 		return fallback
 	}
 	return b
+}
+
+func getPositiveIntEnv(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(v)
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
+}
+
+func getNonNegativeIntEnv(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(v)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
+}
+
+func getFloatEnv(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	value, err := strconv.ParseFloat(v, 64)
+	if err != nil || math.IsNaN(value) || value < 0 || value > 1 {
+		return fallback
+	}
+	return value
 }
 
 func getDurationEnv(key string, fallback time.Duration) time.Duration {
