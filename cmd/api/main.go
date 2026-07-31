@@ -174,7 +174,7 @@ func main() {
 	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger)
 	teamService := service.NewTeamService(teamRepo, logger)
 	contactService := service.NewContactService(contactRepo, logger)
-	domainService := service.NewDomainService(domainRepo, logger)
+	domainService := service.NewDomainService(domainRepo, logger, cfg.AWSRegion)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
 
 	emailHandler := handler.NewEmailHandler(emailService)

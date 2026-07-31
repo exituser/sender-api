@@ -30,10 +30,12 @@ type Domain struct {
 	VerificationToken     string       `json:"-" db:"verification_token"`
 	VerificationStatus    string       `json:"verification_status" db:"verification_status"`
 	SPFStatus             string       `json:"spf_status" db:"spf_status"`
+	MXStatus              string       `json:"mx_status" db:"mx_status"`
 	DKIMStatus            string       `json:"dkim_status" db:"dkim_status"`
 	DMARCStatus           string       `json:"dmarc_status" db:"dmarc_status"`
 	DKIMDNSRecord         *string      `json:"dkim_dns_record,omitempty" db:"dkim_dns_record"`
 	SPFDNSRecord          *string      `json:"spf_dns_record,omitempty" db:"spf_dns_record"`
+	MXDNSRecord           *string      `json:"mx_dns_record,omitempty" db:"mx_dns_record"`
 	DMARCDNSRecord        *string      `json:"dmarc_dns_record,omitempty" db:"dmarc_dns_record"`
 	VerificationDNSRecord *string      `json:"verification_dns_record,omitempty" db:"verification_dns_record"`
 	CreatedAt             time.Time    `json:"created_at" db:"created_at"`

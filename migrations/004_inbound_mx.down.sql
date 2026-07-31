@@ -1,0 +1,2 @@
+ALTER TABLE domains DROP COLUMN IF EXISTS mx_dns_record;
+ALTER TABLE domains DROP COLUMN IF EXISTS mx_status;

@@ -8,8 +8,23 @@ interface Domain {
   name: string;
   status: string;
   spf_status: string;
+  mx_status: string;
   dkim_status: string;
   created_at: string;
+}
+
+interface DNSRecord {
+  type: string;
+  host: string;
+  value: string;
+  ttl: number;
+  status: string;
+}
+
+interface DomainSetup {
+  name: string;
+  instructions: string;
+  dns_records: DNSRecord[];
 }
 
 export default function DomainsPage() {
@@ -18,6 +33,7 @@ export default function DomainsPage() {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  const [setup, setSetup] = useState<DomainSetup | null>(null);
 
   const loadDomains = useCallback(async () => {
     setError("");
@@ -52,9 +68,10 @@ export default function DomainsPage() {
     event.preventDefault();
     setError("");
     try {
-      await api.domains.create({ name });
+      const created = await api.domains.create({ name }) as DomainSetup;
       setName("");
       setShowForm(false);
+      setSetup(created);
       await loadDomains();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add domain");
@@ -84,6 +101,38 @@ export default function DomainsPage() {
       </div>
 
       {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
+      {setup && (
+        <section className="bg-blue-50 border border-blue-200 rounded-lg p-6 space-y-4" aria-labelledby="domain-setup-title">
+          <div>
+            <h2 id="domain-setup-title" className="text-lg font-medium text-blue-950">
+              DNS setup for {setup.name}
+            </h2>
+            <p className="mt-1 text-sm text-blue-900">{setup.instructions}</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-blue-900">
+                  <th className="py-2 pr-4">Type</th>
+                  <th className="py-2 pr-4">Host</th>
+                  <th className="py-2 pr-4">Value</th>
+                  <th className="py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {setup.dns_records.map((record) => (
+                  <tr key={record.type + "-" + record.host} className="border-t border-blue-200 align-top">
+                    <td className="py-2 pr-4 font-medium">{record.type}</td>
+                    <td className="py-2 pr-4">{record.host}</td>
+                    <td className="py-2 pr-4 break-all"><code>{record.value}</code></td>
+                    <td className="py-2">{record.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
       {showForm && (
         <form id="domain-form" onSubmit={addDomain} className="bg-white shadow rounded-lg p-6 flex gap-3">
           <label htmlFor="domain-name" className="sr-only">Domain</label>
@@ -104,6 +153,9 @@ export default function DomainsPage() {
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 SPF
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                MX
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 DKIM
@@ -130,6 +182,9 @@ export default function DomainsPage() {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {domain.spf_status}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  {domain.mx_status}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {domain.dkim_status}

@@ -97,6 +97,15 @@ The domain must have MX records pointing to the SES inbound SMTP endpoint for
 the selected region. SES sandbox restrictions still apply to sending; inbound
 receiving and DNS are separate checks.
 
+For `eu-west-1`, the MX record at the domain apex must be:
+
+```text
+@  MX  10  inbound-smtp.eu-west-1.amazonaws.com
+```
+
+The application keeps a domain in `pending` until this MX record, the SPF
+record, and the Sender API verification TXT record all resolve successfully.
+
 ## Rollout checks
 
 After updating the API and worker environment, verify:

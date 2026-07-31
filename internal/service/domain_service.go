@@ -17,12 +17,14 @@ import (
 type DomainService struct {
 	domainRepo domain.DomainRepository
 	logger     *slog.Logger
+	awsRegion  string
 }
 
-func NewDomainService(domainRepo domain.DomainRepository, logger *slog.Logger) *DomainService {
+func NewDomainService(domainRepo domain.DomainRepository, logger *slog.Logger, awsRegion string) *DomainService {
 	return &DomainService{
 		domainRepo: domainRepo,
 		logger:     logger,
+		awsRegion:  strings.ToLower(strings.TrimSpace(awsRegion)),
 	}
 }
 
@@ -52,16 +54,19 @@ func (s *DomainService) Create(ctx context.Context, teamID uuid.UUID, req *domai
 		VerificationToken:  token,
 		VerificationStatus: "pending",
 		SPFStatus:          "pending",
+		MXStatus:           "pending",
 		DKIMStatus:         "not_configured",
 		DMARCStatus:        "pending",
 	}
+
+	spfRecord := "v=spf1 include:amazonses.com ~all"
+	d.MXDNSRecord = stringPtr(inboundMXHost(s.awsRegion))
+	d.SPFDNSRecord = &spfRecord
 
 	if err := s.domainRepo.Create(ctx, d); err != nil {
 		return nil, fmt.Errorf("failed to create domain: %w", err)
 	}
 
-	spfRecord := "v=spf1 include:amazonses.com ~all"
-	d.SPFDNSRecord = &spfRecord
 	verificationHost := "_sender-api-verification." + name
 	d.VerificationDNSRecord = &verificationHost
 
@@ -78,9 +83,10 @@ func (s *DomainService) Create(ctx context.Context, teamID uuid.UUID, req *domai
 		Status: d.Status,
 		DNSRecords: []domain.DNSRecord{
 			{Type: domain.DNSRecordTypeTXT, Host: "@", Value: *d.SPFDNSRecord, TTL: 3600, Status: d.SPFStatus},
+			{Type: domain.DNSRecordTypeMX, Host: "@", Value: *d.MXDNSRecord, TTL: 3600, Status: d.MXStatus},
 			{Type: domain.DNSRecordTypeTXT, Host: "_sender-api-verification", Value: token, TTL: 3600, Status: d.VerificationStatus},
 		},
-		Instructions: "Add the SPF and Sender API verification TXT records, then call the verify endpoint.",
+		Instructions: "Add the SPF, SES inbound MX, and Sender API verification TXT records, then call the verify endpoint.",
 		CreatedAt:    d.CreatedAt,
 	}, nil
 }
@@ -99,8 +105,12 @@ func (s *DomainService) Verify(ctx context.Context, teamID, domainID uuid.UUID) 
 		return err
 	}
 	d.SPFStatus = "pending"
+	d.MXStatus = "pending"
 	d.VerificationStatus = "pending"
 	d.Status = domain.DomainStatusPending
+	if d.MXDNSRecord == nil {
+		d.MXDNSRecord = stringPtr(inboundMXHost(s.awsRegion))
+	}
 
 	txtRecords, err := net.LookupTXT(d.Name)
 	if err == nil {
@@ -124,7 +134,16 @@ func (s *DomainService) Verify(ctx context.Context, teamID, domainID uuid.UUID) 
 		}
 	}
 
-	if d.SPFStatus == "verified" && d.VerificationStatus == "verified" {
+	mxRecords, mxErr := net.LookupMX(d.Name)
+	if mxErr == nil {
+		if containsInboundMX(mxRecords, s.awsRegion) {
+			d.MXStatus = "verified"
+		} else {
+			d.MXStatus = "failed"
+		}
+	}
+
+	if d.SPFStatus == "verified" && d.VerificationStatus == "verified" && d.MXStatus == "verified" {
 		d.Status = domain.DomainStatusVerified
 	}
 
@@ -133,6 +152,34 @@ func (s *DomainService) Verify(ctx context.Context, teamID, domainID uuid.UUID) 
 
 func (s *DomainService) Delete(ctx context.Context, teamID, id uuid.UUID) error {
 	return s.domainRepo.DeleteForTeam(ctx, teamID, id)
+}
+
+func inboundMXHost(region string) string {
+	region = strings.ToLower(strings.TrimSpace(region))
+	if strings.HasPrefix(region, "cn-") {
+		return "inbound-smtp." + region + ".amazonaws.com.cn"
+	}
+	return "inbound-smtp." + region + ".amazonaws.com"
+}
+
+func containsInboundMX(records []*net.MX, region string) bool {
+	expected := strings.TrimSuffix(strings.ToLower(inboundMXHost(region)), ".")
+	if expected == "inbound-smtp..amazonaws.com" || expected == "inbound-smtp..amazonaws.com.cn" {
+		return false
+	}
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		if strings.TrimSuffix(strings.ToLower(strings.TrimSpace(record.Host)), ".") == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func stringPtr(value string) *string {
+	return &value
 }
 
 func (s *DomainService) generateToken() (string, error) {

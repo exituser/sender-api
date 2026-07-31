@@ -19,23 +19,23 @@ func NewDomainRepo(db *pgxpool.Pool) *DomainRepo {
 
 func (r *DomainRepo) Create(ctx context.Context, d *domain.Domain) error {
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO domains (id, team_id, name, status, verification_token, verification_status, spf_status, dkim_status, dmarc_status, dkim_dns_record, spf_dns_record, dmarc_dns_record, verification_dns_record)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO domains (id, team_id, name, status, verification_token, verification_status, spf_status, mx_status, dkim_status, dmarc_status, dkim_dns_record, spf_dns_record, mx_dns_record, dmarc_dns_record, verification_dns_record)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`, d.ID, d.TeamID, d.Name, d.Status, d.VerificationToken,
-		d.VerificationStatus, d.SPFStatus, d.DKIMStatus, d.DMARCStatus,
-		d.DKIMDNSRecord, d.SPFDNSRecord, d.DMARCDNSRecord, d.VerificationDNSRecord)
+		d.VerificationStatus, d.SPFStatus, d.MXStatus, d.DKIMStatus, d.DMARCStatus,
+		d.DKIMDNSRecord, d.SPFDNSRecord, d.MXDNSRecord, d.DMARCDNSRecord, d.VerificationDNSRecord)
 	return err
 }
 
 func (r *DomainRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Domain, error) {
 	var d domain.Domain
 	err := r.db.QueryRow(ctx, `
-		SELECT id, team_id, name, status, verification_token, verification_status, spf_status, dkim_status, dmarc_status, dkim_dns_record, spf_dns_record, dmarc_dns_record, verification_dns_record, created_at
+		SELECT id, team_id, name, status, verification_token, verification_status, spf_status, mx_status, dkim_status, dmarc_status, dkim_dns_record, spf_dns_record, mx_dns_record, dmarc_dns_record, verification_dns_record, created_at
 		FROM domains WHERE id = $1
 	`, id).Scan(
 		&d.ID, &d.TeamID, &d.Name, &d.Status, &d.VerificationToken, &d.VerificationStatus,
-		&d.SPFStatus, &d.DKIMStatus, &d.DMARCStatus,
-		&d.DKIMDNSRecord, &d.SPFDNSRecord, &d.DMARCDNSRecord, &d.VerificationDNSRecord, &d.CreatedAt,
+		&d.SPFStatus, &d.MXStatus, &d.DKIMStatus, &d.DMARCStatus,
+		&d.DKIMDNSRecord, &d.SPFDNSRecord, &d.MXDNSRecord, &d.DMARCDNSRecord, &d.VerificationDNSRecord, &d.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -68,7 +68,7 @@ func (r *DomainRepo) GetByName(ctx context.Context, teamID uuid.UUID, name strin
 
 func (r *DomainRepo) List(ctx context.Context, teamID uuid.UUID) (*domain.DomainListResponse, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, team_id, name, status, verification_token, verification_status, spf_status, dkim_status, dmarc_status, created_at
+		SELECT id, team_id, name, status, verification_token, verification_status, spf_status, mx_status, dkim_status, dmarc_status, created_at
 		FROM domains WHERE team_id = $1
 		ORDER BY created_at DESC
 	`, teamID)
@@ -81,7 +81,7 @@ func (r *DomainRepo) List(ctx context.Context, teamID uuid.UUID) (*domain.Domain
 	for rows.Next() {
 		var d domain.Domain
 		err := rows.Scan(&d.ID, &d.TeamID, &d.Name, &d.Status, &d.VerificationToken, &d.VerificationStatus,
-			&d.SPFStatus, &d.DKIMStatus, &d.DMARCStatus, &d.CreatedAt)
+			&d.SPFStatus, &d.MXStatus, &d.DKIMStatus, &d.DMARCStatus, &d.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -96,21 +96,21 @@ func (r *DomainRepo) List(ctx context.Context, teamID uuid.UUID) (*domain.Domain
 
 func (r *DomainRepo) Update(ctx context.Context, d *domain.Domain) error {
 	_, err := r.db.Exec(ctx, `
-		UPDATE domains SET status = $1, verification_status = $2, spf_status = $3, dkim_status = $4, dmarc_status = $5,
-		dkim_dns_record = $6, spf_dns_record = $7, dmarc_dns_record = $8, verification_dns_record = $9
-		WHERE id = $10
-	`, d.Status, d.VerificationStatus, d.SPFStatus, d.DKIMStatus, d.DMARCStatus,
-		d.DKIMDNSRecord, d.SPFDNSRecord, d.DMARCDNSRecord, d.VerificationDNSRecord, d.ID)
+		UPDATE domains SET status = $1, verification_status = $2, spf_status = $3, mx_status = $4, dkim_status = $5, dmarc_status = $6,
+			dkim_dns_record = $7, spf_dns_record = $8, mx_dns_record = $9, dmarc_dns_record = $10, verification_dns_record = $11
+		WHERE id = $12
+	`, d.Status, d.VerificationStatus, d.SPFStatus, d.MXStatus, d.DKIMStatus, d.DMARCStatus,
+		d.DKIMDNSRecord, d.SPFDNSRecord, d.MXDNSRecord, d.DMARCDNSRecord, d.VerificationDNSRecord, d.ID)
 	return err
 }
 
 func (r *DomainRepo) UpdateForTeam(ctx context.Context, d *domain.Domain) error {
 	_, err := r.db.Exec(ctx, `
-		UPDATE domains SET status = $1, verification_status = $2, spf_status = $3, dkim_status = $4, dmarc_status = $5,
-			dkim_dns_record = $6, spf_dns_record = $7, dmarc_dns_record = $8, verification_dns_record = $9
-		WHERE id = $10 AND team_id = $11
-	`, d.Status, d.VerificationStatus, d.SPFStatus, d.DKIMStatus, d.DMARCStatus,
-		d.DKIMDNSRecord, d.SPFDNSRecord, d.DMARCDNSRecord, d.VerificationDNSRecord, d.ID, d.TeamID)
+		UPDATE domains SET status = $1, verification_status = $2, spf_status = $3, mx_status = $4, dkim_status = $5, dmarc_status = $6,
+			dkim_dns_record = $7, spf_dns_record = $8, mx_dns_record = $9, dmarc_dns_record = $10, verification_dns_record = $11
+		WHERE id = $12 AND team_id = $13
+	`, d.Status, d.VerificationStatus, d.SPFStatus, d.MXStatus, d.DKIMStatus, d.DMARCStatus,
+		d.DKIMDNSRecord, d.SPFDNSRecord, d.MXDNSRecord, d.DMARCDNSRecord, d.VerificationDNSRecord, d.ID, d.TeamID)
 	return err
 }
 
@@ -128,7 +128,7 @@ func (r *DomainRepo) GetTeamByDomain(ctx context.Context, domainName string) (uu
 	var teamID uuid.UUID
 	err := r.db.QueryRow(ctx, `
 		SELECT team_id FROM domains
-		WHERE lower(trim(trailing '.' FROM name)) = $1 AND status = 'verified'
+		WHERE lower(trim(trailing '.' FROM name)) = $1 AND status = 'verified' AND mx_status = 'verified'
 	`, domainName).Scan(&teamID)
 	return teamID, err
 }
