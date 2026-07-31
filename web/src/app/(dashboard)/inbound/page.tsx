@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { Pagination } from "@/components/pagination";
 
 interface InboundEmail {
   id: string;
@@ -14,18 +15,24 @@ interface InboundEmail {
 
 export default function InboundPage() {
   const [emails, setEmails] = useState<InboundEmail[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   const loadEmails = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      const data = await api.inbound.list() as { data: InboundEmail[] };
+      const data = await api.inbound.list(50, page * 50) as { data: InboundEmail[]; total: number };
       setEmails(data.data || []);
+      setTotal(data.total || 0);
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to load inbound emails");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page]);
 
   useEffect(() => {
     void Promise.resolve().then(loadEmails);
@@ -36,6 +43,8 @@ export default function InboundPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Inbound Emails</h1>
+
+      {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
 
       <div className="bg-white shadow rounded-lg overflow-hidden">
         <table className="min-w-full divide-y divide-gray-200">
@@ -61,6 +70,7 @@ export default function InboundPage() {
         {emails.length === 0 && (
           <div className="text-center py-8 text-gray-500">No inbound emails</div>
         )}
+        <Pagination page={page} pageSize={50} total={total} onPageChange={setPage} disabled={loading} />
       </div>
     </div>
   );

@@ -19,11 +19,12 @@ export default function WebhooksPage() {
   const [error, setError] = useState("");
 
   const loadWebhooks = useCallback(async () => {
+    setError("");
     try {
       const data = await api.webhooks.list() as { data: Webhook[] };
       setWebhooks(data.data || []);
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to load webhooks");
     } finally {
       setLoading(false);
     }
@@ -66,16 +67,18 @@ export default function WebhooksPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Webhooks</h1>
-        <button onClick={() => setShowForm((visible) => !visible)} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        <button type="button" onClick={() => setShowForm((visible) => !visible)} aria-expanded={showForm} aria-controls="webhook-form" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
           Add Webhook
         </button>
       </div>
 
-      {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm">{error}</div>}
+      {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
       {showForm && (
-        <form onSubmit={addWebhook} className="bg-white shadow rounded-lg p-6 space-y-3">
-          <input required type="url" placeholder="https://example.com/webhook" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
-          <input required placeholder="Events, comma-separated" value={form.events} onChange={(e) => setForm({ ...form, events: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
+        <form id="webhook-form" onSubmit={addWebhook} className="bg-white shadow rounded-lg p-6 space-y-3">
+          <label htmlFor="webhook-url" className="sr-only">Webhook URL</label>
+          <input id="webhook-url" name="url" autoComplete="url" required type="url" placeholder="https://example.com/webhook" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
+          <label htmlFor="webhook-events" className="sr-only">Webhook events</label>
+          <input id="webhook-events" name="events" required placeholder="Events, comma-separated" value={form.events} onChange={(e) => setForm({ ...form, events: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
           <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded-md">Save webhook</button>
         </form>
       )}

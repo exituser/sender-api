@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { Pagination } from "@/components/pagination";
 
 interface Email {
   id: string;
@@ -15,6 +16,8 @@ interface Email {
 
 export default function EmailsPage() {
   const [emails, setEmails] = useState<Email[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
@@ -22,15 +25,18 @@ export default function EmailsPage() {
   const [form, setForm] = useState({ from: "", to: "", subject: "", text: "" });
 
   const loadEmails = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      const data = await api.emails.list() as { data: Email[] };
+      const data = await api.emails.list(50, page * 50) as { data: Email[]; total: number };
       setEmails(data.data || []);
+      setTotal(data.total || 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load emails");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page]);
 
   useEffect(() => {
     void Promise.resolve().then(loadEmails);
@@ -78,23 +84,42 @@ export default function EmailsPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Emails</h1>
-        <button onClick={() => setShowForm((visible) => !visible)} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-          Send Email
+        <button
+          type="button"
+          onClick={() => setShowForm((visible) => !visible)}
+          aria-expanded={showForm}
+          aria-controls="send-email-form"
+          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+        >
+          {showForm ? "Close email form" : "Send email"}
         </button>
       </div>
 
       {showForm && (
-        <form onSubmit={sendEmail} className="bg-white shadow rounded-lg p-6 space-y-4">
-          <input required type="email" placeholder="From" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
-          <input required placeholder="To (comma-separated)" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
-          <input required placeholder="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
-          <textarea required placeholder="Message" value={form.text} onChange={(e) => setForm({ ...form, text: e.target.value })} className="w-full px-3 py-2 border rounded-md min-h-32" />
-          <button disabled={sending} type="submit" className="px-4 py-2 bg-green-600 text-white rounded-md disabled:opacity-50">{sending ? "Sending..." : "Queue email"}</button>
+        <form id="send-email-form" onSubmit={sendEmail} className="bg-white shadow rounded-lg p-6 space-y-4">
+          <div>
+            <label htmlFor="email-from" className="block text-sm font-medium text-gray-700">From</label>
+            <input id="email-from" name="from" autoComplete="email" spellCheck={false} required type="email" placeholder="sender@example.com" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" />
+          </div>
+          <div>
+            <label htmlFor="email-to" className="block text-sm font-medium text-gray-700">To</label>
+            <input id="email-to" name="to" autoComplete="email" spellCheck={false} required type="email" multiple aria-describedby="email-to-hint" placeholder="recipient@example.com, another@example.com" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" />
+            <p id="email-to-hint" className="mt-1 text-sm text-gray-500">Separate multiple recipients with commas.</p>
+          </div>
+          <div>
+            <label htmlFor="email-subject" className="block text-sm font-medium text-gray-700">Subject</label>
+            <input id="email-subject" name="subject" required type="text" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" />
+          </div>
+          <div>
+            <label htmlFor="email-message" className="block text-sm font-medium text-gray-700">Message</label>
+            <textarea id="email-message" name="message" required value={form.text} onChange={(e) => setForm({ ...form, text: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md min-h-32" />
+          </div>
+          <button disabled={sending} type="submit" className="px-4 py-2 bg-green-600 text-white rounded-md disabled:opacity-50" aria-busy={sending}>{sending ? "Sending..." : "Queue email"}</button>
         </form>
       )}
 
       {error && (
-        <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm">
+        <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">
           {error}
         </div>
       )}
@@ -147,6 +172,7 @@ export default function EmailsPage() {
             No emails found
           </div>
         )}
+        <Pagination page={page} pageSize={50} total={total} onPageChange={setPage} disabled={loading} />
       </div>
     </div>
   );

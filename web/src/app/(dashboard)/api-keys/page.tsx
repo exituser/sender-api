@@ -19,11 +19,12 @@ export default function APIKeysPage() {
   const [error, setError] = useState("");
 
   const loadKeys = useCallback(async () => {
+    setError("");
     try {
       const data = await api.apiKeys.list() as APIKey[];
       setKeys(data || []);
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to load API keys");
     } finally {
       setLoading(false);
     }
@@ -65,16 +66,17 @@ export default function APIKeysPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">API Keys</h1>
-        <button onClick={() => setShowForm((visible) => !visible)} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        <button type="button" onClick={() => setShowForm((visible) => !visible)} aria-expanded={showForm} aria-controls="api-key-form" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
           Create Key
         </button>
       </div>
 
-      {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm">{error}</div>}
+      {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
       {newKey && <div className="p-3 bg-yellow-50 text-yellow-900 rounded-md text-sm">Copy this key now: <code>{newKey}</code></div>}
       {showForm && (
-        <form onSubmit={createKey} className="bg-white shadow rounded-lg p-6 flex gap-3">
-          <input required placeholder="Key name" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 px-3 py-2 border rounded-md" />
+        <form id="api-key-form" onSubmit={createKey} className="bg-white shadow rounded-lg p-6 flex gap-3">
+          <label htmlFor="api-key-name" className="sr-only">Key name</label>
+          <input id="api-key-name" name="name" required placeholder="Key name" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 px-3 py-2 border rounded-md" />
           <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded-md">Create</button>
         </form>
       )}

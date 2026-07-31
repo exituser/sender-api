@@ -55,3 +55,22 @@ body {
   background: hsl(var(--background));
   color: hsl(var(--foreground));
 }
+
+:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 1rem;
+  z-index: 50;
+  padding: 0.5rem 0.75rem;
+  background: white;
+  color: #1d4ed8;
+}
+
+.skip-link:focus-visible {
+  left: 1rem;
+}

@@ -20,11 +20,12 @@ export default function DomainsPage() {
   const [error, setError] = useState("");
 
   const loadDomains = useCallback(async () => {
+    setError("");
     try {
       const data = await api.domains.list() as { data: Domain[] };
       setDomains(data.data || []);
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : "Failed to load domains");
     } finally {
       setLoading(false);
     }
@@ -77,15 +78,16 @@ export default function DomainsPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Domains</h1>
-        <button onClick={() => setShowForm((visible) => !visible)} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        <button type="button" onClick={() => setShowForm((visible) => !visible)} aria-expanded={showForm} aria-controls="domain-form" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
           Add Domain
         </button>
       </div>
 
-      {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm">{error}</div>}
+      {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
       {showForm && (
-        <form onSubmit={addDomain} className="bg-white shadow rounded-lg p-6 flex gap-3">
-          <input required type="text" placeholder="example.com" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 px-3 py-2 border rounded-md" />
+        <form id="domain-form" onSubmit={addDomain} className="bg-white shadow rounded-lg p-6 flex gap-3">
+          <label htmlFor="domain-name" className="sr-only">Domain</label>
+          <input id="domain-name" name="domain" autoComplete="url" required type="text" placeholder="example.com" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 px-3 py-2 border rounded-md" />
           <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded-md">Save</button>
         </form>
       )}

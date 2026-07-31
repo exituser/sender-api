@@ -3,6 +3,10 @@ import { createClient } from "@/lib/supabase/client";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 const ACTIVE_TEAM_KEY = "sender-api.active-team";
 
+let activeTeamCache: { sessionKey: string; teamId: string } | undefined;
+let activeTeamRequest: { sessionKey: string; promise: Promise<string> } | undefined;
+let activeTeamGeneration = 0;
+
 interface RequestOptions {
   method?: string;
   body?: unknown;
@@ -25,7 +29,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     ...headers,
   };
   if (typeof window !== "undefined" && !path.startsWith("/teams")) {
-    const teamId = await getActiveTeamId(authHeaders);
+    const teamId = await getActiveTeamId(session?.access_token, authHeaders);
     if (teamId) {
       requestHeaders["X-Team-ID"] = teamId;
     }
@@ -52,22 +56,59 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return res.json();
 }
 
-async function getActiveTeamId(authHeaders: Record<string, string>): Promise<string> {
+async function getActiveTeamId(
+  accessToken: string | undefined,
+  authHeaders: Record<string, string>
+): Promise<string> {
+  if (!accessToken) {
+    invalidateActiveTeamCache();
+    return "";
+  }
+
+  if (activeTeamCache?.sessionKey === accessToken) {
+    return activeTeamCache.teamId;
+  }
+
+  if (activeTeamRequest?.sessionKey === accessToken) {
+    return activeTeamRequest.promise;
+  }
+
+  const generation = activeTeamGeneration;
+  const promise = fetchActiveTeamId(accessToken, authHeaders, generation);
+  activeTeamRequest = { sessionKey: accessToken, promise };
+  try {
+    return await promise;
+  } finally {
+    if (activeTeamRequest?.promise === promise) {
+      activeTeamRequest = undefined;
+    }
+  }
+}
+
+async function fetchActiveTeamId(
+  sessionKey: string,
+  authHeaders: Record<string, string>,
+  generation: number
+): Promise<string> {
   const stored = window.localStorage.getItem(ACTIVE_TEAM_KEY);
   const response = await fetch(`${API_BASE_URL}/api/v1/teams`, {
     headers: authHeaders,
   });
   if (!response.ok) {
-    clearActiveTeamId();
+    invalidateActiveTeamCache();
     return "";
   }
   const teams = (await response.json()) as { id: string }[];
   const activeTeam = teams.find((team) => team.id === stored) ?? teams[0];
   if (activeTeam?.id) {
-    setActiveTeamId(activeTeam.id);
+    if (generation !== activeTeamGeneration) {
+      return "";
+    }
+    window.localStorage.setItem(ACTIVE_TEAM_KEY, activeTeam.id);
+    activeTeamCache = { sessionKey, teamId: activeTeam.id };
     return activeTeam.id;
   }
-  clearActiveTeamId();
+  invalidateActiveTeamCache();
   return "";
 }
 
@@ -75,12 +116,27 @@ export function setActiveTeamId(teamId: string) {
   if (typeof window !== "undefined") {
     window.localStorage.setItem(ACTIVE_TEAM_KEY, teamId);
   }
+  invalidateActiveTeamCache();
 }
 
 export function clearActiveTeamId() {
   if (typeof window !== "undefined") {
     window.localStorage.removeItem(ACTIVE_TEAM_KEY);
   }
+  invalidateActiveTeamCache();
+}
+
+export function invalidateActiveTeamCache() {
+  activeTeamGeneration += 1;
+  activeTeamCache = undefined;
+  activeTeamRequest = undefined;
+}
+
+function createIdempotencyKey(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export const api = {
@@ -88,8 +144,8 @@ export const api = {
     list: (limit = 50, offset = 0) =>
       request(`/emails?limit=${limit}&offset=${offset}`),
     get: (id: string) => request(`/emails/${id}`),
-    send: (data: unknown) =>
-      request("/emails", { method: "POST", body: data }),
+    send: (data: unknown, idempotencyKey = createIdempotencyKey()) =>
+      request("/emails", { method: "POST", body: data, headers: { "Idempotency-Key": idempotencyKey } }),
     batch: (data: unknown) =>
       request("/emails/batch", { method: "POST", body: data }),
     events: (id: string) => request(`/emails/${id}/events`),
@@ -100,11 +156,11 @@ export const api = {
     list: () => request("/teams"),
     get: (id: string) => request(`/teams/${id}`),
     create: (data: unknown) =>
-      request("/teams", { method: "POST", body: data }),
+      request("/teams", { method: "POST", body: data }).finally(invalidateActiveTeamCache),
     update: (id: string, data: unknown) =>
-      request(`/teams/${id}`, { method: "PATCH", body: data }),
+      request(`/teams/${id}`, { method: "PATCH", body: data }).finally(invalidateActiveTeamCache),
     delete: (id: string) =>
-      request(`/teams/${id}`, { method: "DELETE" }),
+      request(`/teams/${id}`, { method: "DELETE" }).finally(invalidateActiveTeamCache),
     members: (id: string) => request(`/teams/${id}/members`),
     invite: (id: string, data: unknown) =>
       request(`/teams/${id}/invite`, { method: "POST", body: data }),
