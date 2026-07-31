@@ -149,7 +149,7 @@ services:
       - ./migrations/003_hardening.up.sql:/docker-entrypoint-initdb.d/03_hardening.sql
       - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/04_compose_version.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-supabase_admin}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-supabase_admin} -d $${POSTGRES_DB:-sender_api}"]
       interval: 5s
       timeout: 5s
       retries: 5
