@@ -183,12 +183,16 @@ DB_MAX_CONNS=4
 DB_MIN_CONNS=0
 REDIS_POOL_SIZE=4
 WORKER_POLL_INTERVAL=5s
+WEB_MEM_LIMIT=256m
+WEB_CPUS=0.25
 ```
 
 The worker interval trades up to a few seconds of idle webhook/scheduled-email
 latency for fewer database and Redis polls. Set it to `1s` when latency matters
 more than idle cost. Error reporting remains available with `SENTRY_DSN`; only
-distributed tracing is disabled by the low-volume default.
+distributed tracing is disabled by the low-volume default. The web container
+uses a lightweight `/healthz` endpoint that does not call Supabase, so health
+checks do not create authentication traffic.
 
 ### Migrations
 
