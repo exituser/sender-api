@@ -105,6 +105,24 @@ func (r *EmailRepo) SetProviderMessageID(ctx context.Context, id uuid.UUID, mess
 	return err
 }
 
+// MarkProviderAccepted records the provider receipt and terminal sent state in
+// one database statement. Once SES has accepted a message, a later worker
+// retry must never submit it again just because one local write failed.
+func (r *EmailRepo) MarkProviderAccepted(ctx context.Context, id uuid.UUID, messageID string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE emails
+		SET provider_message_id = $1, status = 'sent', sending_at = NULL, sent_at = NOW()
+		WHERE id = $2 AND status = 'sending'
+	`, messageID, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("email %s was not in sending state", id)
+	}
+	return nil
+}
+
 func (r *EmailRepo) ClaimForSending(ctx context.Context, id uuid.UUID) (bool, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE emails SET status = 'sending', sending_at = NOW()
@@ -180,8 +198,11 @@ func (r *EmailRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domai
 
 func (r *EmailRepo) ResetSendingToQueued(ctx context.Context) error {
 	_, err := r.db.Exec(ctx, `
-		UPDATE emails SET status = 'queued', sending_at = NULL
+		-- A stale sending row has an unknown provider outcome. Fail closed
+		-- instead of retrying it and potentially sending a duplicate.
+		UPDATE emails SET status = 'failed', sending_at = NULL
 		WHERE status = 'sending'
+		  AND provider_message_id IS NULL
 		  AND (sending_at IS NULL OR sending_at < NOW() - INTERVAL '10 minutes')
 	`)
 	return err

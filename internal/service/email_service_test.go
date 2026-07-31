@@ -102,6 +102,25 @@ type quotaQueueStub struct {
 	enqueueErr   error
 }
 
+type suppressionRepoStub struct {
+	domain.SuppressionRepository
+	suppressions []domain.Suppression
+	lookupTeam   uuid.UUID
+	lookupEmails []string
+	upserts      []domain.Suppression
+}
+
+func (s *suppressionRepoStub) GetByEmails(_ context.Context, teamID uuid.UUID, emails []string) ([]domain.Suppression, error) {
+	s.lookupTeam = teamID
+	s.lookupEmails = append([]string(nil), emails...)
+	return s.suppressions, nil
+}
+
+func (s *suppressionRepoStub) Upsert(_ context.Context, suppression *domain.Suppression) error {
+	s.upserts = append(s.upserts, *suppression)
+	return nil
+}
+
 func (s *quotaQueueStub) Enqueue(context.Context, string) error {
 	s.enqueueCalls++
 	return s.enqueueErr
@@ -221,5 +240,29 @@ func TestEmailServiceKeepsDailyRecipientLimitAfterSuccessfulQueue(t *testing.T) 
 	}
 	if repo.createCalls != 1 || queue.enqueueCalls != 1 {
 		t.Fatalf("expected one persisted and enqueued email: creates=%d enqueues=%d", repo.createCalls, queue.enqueueCalls)
+	}
+}
+
+func TestEmailServiceBlocksSuppressedRecipientBeforePersisting(t *testing.T) {
+	teamID := uuid.New()
+	repo := &quotaEmailRepoStub{}
+	queue := &quotaQueueStub{}
+	suppressions := &suppressionRepoStub{suppressions: []domain.Suppression{{
+		TeamID: teamID, Email: "blocked@example.net", Reason: domain.SuppressionReasonBounce,
+	}}}
+	service := newQuotaEmailService(repo, queue)
+	service.SetSuppressionRepository(suppressions)
+	req := quotaRequest()
+	req.To = []string{" Blocked@Example.NET "}
+
+	_, err := service.Send(context.Background(), teamID, req)
+	if !errors.Is(err, ErrRecipientSuppressed) {
+		t.Fatalf("expected suppressed recipient error, got %v", err)
+	}
+	if repo.createCalls != 0 || queue.enqueueCalls != 0 {
+		t.Fatalf("suppressed request must not persist or enqueue: creates=%d enqueues=%d", repo.createCalls, queue.enqueueCalls)
+	}
+	if suppressions.lookupTeam != teamID || len(suppressions.lookupEmails) != 1 || suppressions.lookupEmails[0] != "blocked@example.net" {
+		t.Fatalf("expected normalized team-scoped lookup, got team=%s emails=%v", suppressions.lookupTeam, suppressions.lookupEmails)
 	}
 }

@@ -41,6 +41,11 @@ func (s *EmailService) ProcessProviderEvent(ctx context.Context, providerMessage
 		}
 		email.Status = targetStatus
 	}
+	if targetStatus == domain.EmailStatusBounced || targetStatus == domain.EmailStatusComplained {
+		if err := s.suppressEventRecipients(ctx, email.TeamID, targetStatus, data); err != nil {
+			return err
+		}
+	}
 
 	if err := s.emailRepo.AddEvent(ctx, &domain.EmailEvent{
 		ID:        eventID,
@@ -58,6 +63,53 @@ func (s *EmailService) ProcessProviderEvent(ctx context.Context, providerMessage
 
 	if statusChanged || !hasStatus {
 		s.dispatchWebhooks(ctx, email.TeamID, eventID, eventName, email)
+	}
+	return nil
+}
+
+func (s *EmailService) suppressEventRecipients(ctx context.Context, teamID uuid.UUID, status domain.EmailStatus, data json.RawMessage) error {
+	if s.suppressionRepo == nil {
+		return nil
+	}
+
+	var event struct {
+		Bounce struct {
+			BouncedRecipients []struct {
+				EmailAddress string `json:"emailAddress"`
+			} `json:"bouncedRecipients"`
+		} `json:"bounce"`
+		Complaint struct {
+			ComplainedRecipients []struct {
+				EmailAddress string `json:"emailAddress"`
+			} `json:"complainedRecipients"`
+		} `json:"complaint"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return fmt.Errorf("decode provider suppression recipients: %w", err)
+	}
+
+	var recipients []string
+	reason := domain.SuppressionReasonBounce
+	if status == domain.EmailStatusBounced {
+		for _, recipient := range event.Bounce.BouncedRecipients {
+			recipients = append(recipients, recipient.EmailAddress)
+		}
+	} else {
+		reason = domain.SuppressionReasonComplaint
+		for _, recipient := range event.Complaint.ComplainedRecipients {
+			recipients = append(recipients, recipient.EmailAddress)
+		}
+	}
+	for _, recipient := range recipients {
+		email := domain.NormalizeEmail(recipient)
+		if email == "" {
+			continue
+		}
+		if err := s.suppressionRepo.Upsert(ctx, &domain.Suppression{
+			ID: uuid.New(), TeamID: teamID, Email: email, Reason: reason,
+		}); err != nil {
+			return fmt.Errorf("upsert recipient suppression: %w", err)
+		}
 	}
 	return nil
 }

@@ -82,7 +82,7 @@ func (w *EmailWorker) processNext(ctx context.Context) {
 
 	if err := w.emailService.ProcessFromQueue(ctx, emailID); err != nil {
 		w.logger.Error("failed to process email", "email_id", emailID, "error", err)
-		if errors.Is(err, service.ErrEmailDeliveryFailed) || errors.Is(err, service.ErrEmailNotQueued) {
+		if errors.Is(err, service.ErrEmailDeliveryFailed) || errors.Is(err, service.ErrEmailNotQueued) || errors.Is(err, service.ErrEmailAccepted) {
 			if ackErr := w.queue.Ack(ctx, emailID); ackErr != nil {
 				w.logger.Error("failed to acknowledge terminal email", "email_id", emailID, "error", ackErr)
 			}

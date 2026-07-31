@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,11 +30,13 @@ type Domain struct {
 	Status                DomainStatus `json:"status" db:"status"`
 	VerificationToken     string       `json:"-" db:"verification_token"`
 	VerificationStatus    string       `json:"verification_status" db:"verification_status"`
+	SESVerificationStatus string       `json:"ses_verification_status" db:"ses_verification_status"`
 	SPFStatus             string       `json:"spf_status" db:"spf_status"`
 	MXStatus              string       `json:"mx_status" db:"mx_status"`
 	DKIMStatus            string       `json:"dkim_status" db:"dkim_status"`
 	DMARCStatus           string       `json:"dmarc_status" db:"dmarc_status"`
 	DKIMDNSRecord         *string      `json:"dkim_dns_record,omitempty" db:"dkim_dns_record"`
+	DKIMDNSRecords        []DNSRecord  `json:"dkim_dns_records,omitempty" db:"-"`
 	SPFDNSRecord          *string      `json:"spf_dns_record,omitempty" db:"spf_dns_record"`
 	MXDNSRecord           *string      `json:"mx_dns_record,omitempty" db:"mx_dns_record"`
 	DMARCDNSRecord        *string      `json:"dmarc_dns_record,omitempty" db:"dmarc_dns_record"`
@@ -60,6 +63,23 @@ type DomainResponse struct {
 	DNSRecords   []DNSRecord  `json:"dns_records"`
 	Instructions string       `json:"instructions"`
 	CreatedAt    time.Time    `json:"created_at"`
+}
+
+// SESIdentity contains the provider-side verification state for a domain.
+// It deliberately contains no AWS SDK types so the domain service remains
+// straightforward to test and can be backed by another SES-compatible
+// provider later.
+type SESIdentity struct {
+	VerifiedForSending bool
+	VerificationStatus string
+	DKIMStatus         string
+	DKIMTokens         []string
+	SigningHostedZone  string
+}
+
+type SESIdentityProvider interface {
+	Create(ctx context.Context, identity string) (*SESIdentity, error)
+	Get(ctx context.Context, identity string) (*SESIdentity, error)
 }
 
 type DomainListResponse struct {

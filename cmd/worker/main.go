@@ -85,10 +85,12 @@ func main() {
 	inboundRepo := repository.NewInboundEmailRepo(dbPool)
 	webhookRepo := repository.NewWebhookRepo(dbPool)
 	webhookDeliveryRepo := repository.NewWebhookDeliveryRepo(dbPool)
+	suppressionRepo := repository.NewSuppressionRepo(dbPool)
 	redisQueue := queue.NewRedisQueue(redisClient)
 	sesMailer := mailer.NewSESMailer(sesClient, cfg.AWSESConfigSet, logger)
 
-	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger)
+	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger, suppressionRepo)
+	emailService.SetPlanResolver(repository.NewTeamRepo(dbPool), cfg.PlanFreeDailyLimit, cfg.PlanProDailyLimit, cfg.PlanScaleDailyLimit)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
 
 	emailWorker := worker.NewEmailWorker(emailService, redisQueue, logger, cfg.WorkerPollInterval)

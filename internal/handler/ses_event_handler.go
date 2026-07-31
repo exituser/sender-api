@@ -81,7 +81,12 @@ func (h *SESEventHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	eventID := uuid.NewSHA1(uuid.Nil, []byte(envelope.MessageID))
 	if err := h.emailService.ProcessProviderEvent(r.Context(), event.Mail.MessageID, eventType, json.RawMessage(envelope.Message), eventID); err != nil {
 		if serviceErrIsProviderNotFound(err) {
-			writeError(w, "email provider event will be retried", http.StatusServiceUnavailable)
+			// A provider callback can legitimately arrive for an email that was
+			// deleted or created before this API knew its provider ID. Retrying
+			// that message forever only poisons the SNS subscription; the event
+			// is still acknowledged and the correlation miss is observable in
+			// application logs.
+			writeJSON(w, map[string]string{"status": "ignored"}, http.StatusOK)
 			return
 		}
 		writeError(w, "failed to process provider event", http.StatusInternalServerError)

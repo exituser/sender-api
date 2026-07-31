@@ -15,17 +15,25 @@ import (
 )
 
 type DomainService struct {
-	domainRepo domain.DomainRepository
-	logger     *slog.Logger
-	awsRegion  string
+	domainRepo  domain.DomainRepository
+	logger      *slog.Logger
+	awsRegion   string
+	sesIdentity domain.SESIdentityProvider
 }
 
-func NewDomainService(domainRepo domain.DomainRepository, logger *slog.Logger, awsRegion string) *DomainService {
-	return &DomainService{
+func NewDomainService(domainRepo domain.DomainRepository, logger *slog.Logger, awsRegion string, identityProviders ...domain.SESIdentityProvider) *DomainService {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	service := &DomainService{
 		domainRepo: domainRepo,
 		logger:     logger,
 		awsRegion:  strings.ToLower(strings.TrimSpace(awsRegion)),
 	}
+	if len(identityProviders) > 0 {
+		service.sesIdentity = identityProviders[0]
+	}
+	return service
 }
 
 func (s *DomainService) Create(ctx context.Context, teamID uuid.UUID, req *domain.CreateDomainRequest) (*domain.DomainResponse, error) {
@@ -47,32 +55,36 @@ func (s *DomainService) Create(ctx context.Context, teamID uuid.UUID, req *domai
 	}
 
 	d := &domain.Domain{
-		ID:                 uuid.New(),
-		TeamID:             teamID,
-		Name:               name,
-		Status:             domain.DomainStatusPending,
-		VerificationToken:  token,
-		VerificationStatus: "pending",
-		SPFStatus:          "pending",
-		MXStatus:           "pending",
-		DKIMStatus:         "not_configured",
-		DMARCStatus:        "pending",
+		ID:                    uuid.New(),
+		TeamID:                teamID,
+		Name:                  name,
+		Status:                domain.DomainStatusPending,
+		VerificationToken:     token,
+		VerificationStatus:    "pending",
+		SESVerificationStatus: "pending",
+		SPFStatus:             "pending",
+		MXStatus:              "pending",
+		DKIMStatus:            "pending",
+		DMARCStatus:           "pending",
 	}
 
 	spfRecord := "v=spf1 include:amazonses.com ~all"
 	d.MXDNSRecord = stringPtr(inboundMXHost(s.awsRegion))
 	d.SPFDNSRecord = &spfRecord
+	verificationHost := "_sender-api-verification." + name
+	d.VerificationDNSRecord = &verificationHost
+	d.DMARCDNSRecord = stringPtr("_dmarc." + name)
+
+	if s.sesIdentity != nil {
+		identity, identityErr := s.sesIdentity.Create(ctx, name)
+		if identityErr != nil {
+			return nil, fmt.Errorf("failed to initialize SES identity: %w", identityErr)
+		}
+		s.applySESIdentity(d, identity)
+	}
 
 	if err := s.domainRepo.Create(ctx, d); err != nil {
 		return nil, fmt.Errorf("failed to create domain: %w", err)
-	}
-
-	verificationHost := "_sender-api-verification." + name
-	d.VerificationDNSRecord = &verificationHost
-
-	if err := s.domainRepo.Update(ctx, d); err != nil {
-		_ = s.domainRepo.Delete(ctx, d.ID)
-		return nil, fmt.Errorf("failed to save domain DNS records: %w", err)
 	}
 
 	s.logger.Info("domain created", "domain_id", d.ID, "name", d.Name)
@@ -81,12 +93,13 @@ func (s *DomainService) Create(ctx context.Context, teamID uuid.UUID, req *domai
 		ID:     d.ID,
 		Name:   d.Name,
 		Status: d.Status,
-		DNSRecords: []domain.DNSRecord{
+		DNSRecords: append([]domain.DNSRecord{
 			{Type: domain.DNSRecordTypeTXT, Host: "@", Value: *d.SPFDNSRecord, TTL: 3600, Status: d.SPFStatus},
 			{Type: domain.DNSRecordTypeMX, Host: "@", Value: *d.MXDNSRecord, TTL: 3600, Status: d.MXStatus},
 			{Type: domain.DNSRecordTypeTXT, Host: "_sender-api-verification", Value: token, TTL: 3600, Status: d.VerificationStatus},
-		},
-		Instructions: "Add the SPF, SES inbound MX, and Sender API verification TXT records, then call the verify endpoint.",
+			{Type: domain.DNSRecordTypeTXT, Host: "_dmarc", Value: "v=DMARC1; p=none", TTL: 3600, Status: d.DMARCStatus},
+		}, d.DKIMDNSRecords...),
+		Instructions: "Add or merge the SPF, SES inbound MX, Sender API verification TXT, DKIM CNAME, and DMARC TXT records, then call the verify endpoint. Replacing an existing MX record changes mail routing and requires an explicit review.",
 		CreatedAt:    d.CreatedAt,
 	}, nil
 }
@@ -107,9 +120,23 @@ func (s *DomainService) Verify(ctx context.Context, teamID, domainID uuid.UUID) 
 	d.SPFStatus = "pending"
 	d.MXStatus = "pending"
 	d.VerificationStatus = "pending"
+	d.SESVerificationStatus = "pending"
 	d.Status = domain.DomainStatusPending
 	if d.MXDNSRecord == nil {
 		d.MXDNSRecord = stringPtr(inboundMXHost(s.awsRegion))
+	}
+	if d.DMARCDNSRecord == nil {
+		d.DMARCDNSRecord = stringPtr("_dmarc." + d.Name)
+	}
+
+	if s.sesIdentity != nil {
+		identity, identityErr := s.sesIdentity.Get(ctx, d.Name)
+		if identityErr != nil {
+			return fmt.Errorf("failed to read SES identity: %w", identityErr)
+		}
+		s.applySESIdentity(d, identity)
+	} else {
+		d.DKIMStatus = "pending"
 	}
 
 	txtRecords, err := net.LookupTXT(d.Name)
@@ -143,7 +170,21 @@ func (s *DomainService) Verify(ctx context.Context, teamID, domainID uuid.UUID) 
 		}
 	}
 
-	if d.SPFStatus == "verified" && d.VerificationStatus == "verified" && d.MXStatus == "verified" {
+	d.DMARCStatus = "failed"
+	if d.DMARCDNSRecord != nil {
+		if dmarcRecords, lookupErr := net.LookupTXT(*d.DMARCDNSRecord); lookupErr == nil {
+			for _, record := range dmarcRecords {
+				if containsDMARC(record) {
+					d.DMARCStatus = "verified"
+					break
+				}
+			}
+		}
+	}
+
+	if d.SPFStatus == "verified" && d.VerificationStatus == "verified" &&
+		d.SESVerificationStatus == "verified" && d.MXStatus == "verified" &&
+		d.DKIMStatus == "verified" {
 		d.Status = domain.DomainStatusVerified
 	}
 
@@ -192,4 +233,54 @@ func (s *DomainService) generateToken() (string, error) {
 
 func containsSPF(record string) bool {
 	return len(record) >= 4 && (strings.EqualFold(record[:4], "v=spf")) && strings.Contains(strings.ToLower(record), "include:amazonses.com")
+}
+
+func containsDMARC(record string) bool {
+	record = strings.TrimSpace(record)
+	return len(record) >= 8 && strings.EqualFold(record[:8], "v=dmarc1")
+}
+
+func (s *DomainService) applySESIdentity(d *domain.Domain, identity *domain.SESIdentity) {
+	if identity == nil {
+		d.SESVerificationStatus = "pending"
+		d.DKIMStatus = "pending"
+		return
+	}
+	if identity.VerificationStatus != "" {
+		d.SESVerificationStatus = strings.ToLower(identity.VerificationStatus)
+	}
+	if identity.VerifiedForSending {
+		d.SESVerificationStatus = "verified"
+	}
+	if identity.DKIMStatus != "" {
+		d.DKIMStatus = strings.ToLower(identity.DKIMStatus)
+	}
+	if d.DKIMStatus == "success" {
+		d.DKIMStatus = "verified"
+	}
+	if len(identity.DKIMTokens) == 0 {
+		return
+	}
+	hostedZone := strings.TrimSuffix(strings.TrimSpace(identity.SigningHostedZone), ".")
+	if hostedZone == "" {
+		hostedZone = "dkim.amazonses.com"
+	}
+	d.DKIMDNSRecords = make([]domain.DNSRecord, 0, len(identity.DKIMTokens))
+	for _, token := range identity.DKIMTokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		d.DKIMDNSRecords = append(d.DKIMDNSRecords, domain.DNSRecord{
+			Type:   domain.DNSRecordTypeCNAME,
+			Host:   token + "._domainkey." + d.Name,
+			Value:  token + "." + hostedZone,
+			TTL:    3600,
+			Status: d.DKIMStatus,
+		})
+	}
+	if len(d.DKIMDNSRecords) > 0 {
+		first := d.DKIMDNSRecords[0].Host
+		d.DKIMDNSRecord = &first
+	}
 }

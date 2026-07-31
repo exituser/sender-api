@@ -22,6 +22,13 @@ type InboundEmail struct {
 	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
 }
 
+type InboundAttachment struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	ContentID   string `json:"content_id,omitempty"`
+	Content     []byte `json:"content"`
+}
+
 type InboundEmailListResponse struct {
 	Data   []InboundEmail `json:"data"`
 	Total  int            `json:"total"`

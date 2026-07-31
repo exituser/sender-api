@@ -133,7 +133,7 @@ func (w *InboundWorker) processMessage(ctx context.Context, message types.Messag
 		messageID = &value
 	}
 	rawS3Key := notification.Receipt.Action.ObjectKey
-	return w.inboundService.ProcessEmailWithMessageID(ctx, teamID, messageID, parsed.From, routingRecipients, parsed.Subject, content, "", nil, rawS3Key)
+	return w.inboundService.ProcessEmailWithMessageIDAndAttachments(ctx, teamID, messageID, parsed.From, routingRecipients, parsed.Subject, parsed.Text, parsed.HTML, parsed.Headers, parsed.Attachments, rawS3Key)
 }
 
 func (w *InboundWorker) deleteMessage(ctx context.Context, message types.Message) error {

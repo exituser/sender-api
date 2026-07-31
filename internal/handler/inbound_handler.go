@@ -31,6 +31,7 @@ func NewInboundHandler(inboundService *service.InboundService, inboundToken, aws
 func (h *InboundHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
+	r.Get("/{id}", h.GetByID)
 	return r
 }
 
@@ -102,15 +103,20 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	from, to, subject := extractInboundHeaders(notification.Content)
-
-	if from == "" || len(to) == 0 {
+	parsed, err := inbound.ParseRawMessage(notification.Content)
+	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "invalid email"})
 		return
 	}
 
-	routingRecipients := to
+	if parsed.From == "" || len(parsed.To) == 0 {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "invalid email"})
+		return
+	}
+
+	routingRecipients := parsed.To
 	if len(notification.Receipt.Recipients) > 0 {
 		routingRecipients = notification.Receipt.Recipients
 	}
@@ -131,16 +137,17 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 		value := strings.TrimSpace(notification.MessageID)
 		messageID = &value
 	}
-	err = h.inboundService.ProcessEmailWithMessageID(
+	err = h.inboundService.ProcessEmailWithMessageIDAndAttachments(
 		r.Context(),
 		teamID,
 		messageID,
-		from,
+		parsed.From,
 		routingRecipients,
-		subject,
-		notification.Content,
-		"",
-		nil,
+		parsed.Subject,
+		parsed.Text,
+		parsed.HTML,
+		parsed.Headers,
+		parsed.Attachments,
 		rawS3Key,
 	)
 	if err != nil {
@@ -150,6 +157,27 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "processed"})
+}
+
+func (h *InboundHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
+	_, teamID, ok := getTeamID(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	email, err := h.inboundService.GetByIDForTeam(r.Context(), teamID, id)
+	if err != nil {
+		writeError(w, "inbound email not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, email, http.StatusOK)
 }
 
 func (h *InboundHandler) teamForRecipients(ctx context.Context, recipients []string) (uuid.UUID, error) {

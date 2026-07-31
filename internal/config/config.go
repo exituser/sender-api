@@ -31,6 +31,14 @@ type Config struct {
 	AWSESConfigSet      string
 	OutboundSESTopicArn string
 
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	StripePricePro      string
+	StripePriceScale    string
+	StripeSuccessURL    string
+	StripeCancelURL     string
+	StripeReturnURL     string
+
 	SupabaseURL        string
 	SupabaseAnonKey    string
 	SupabaseServiceKey string
@@ -39,6 +47,9 @@ type Config struct {
 	SentryTraceSampleRate float64
 	MetricsToken          string
 	DailyRecipientLimit   int
+	PlanFreeDailyLimit    int
+	PlanProDailyLimit     int
+	PlanScaleDailyLimit   int
 
 	InboundS3Bucket     string
 	InboundSQSQueueURL  string
@@ -68,6 +79,14 @@ func Load() *Config {
 		AWSESConfigSet:      os.Getenv("AWS_SES_CONFIGSET"),
 		OutboundSESTopicArn: os.Getenv("OUTBOUND_SES_TOPIC_ARN"),
 
+		StripeSecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
+		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
+		StripePricePro:      os.Getenv("STRIPE_PRICE_PRO"),
+		StripePriceScale:    os.Getenv("STRIPE_PRICE_SCALE"),
+		StripeSuccessURL:    getEnv("STRIPE_SUCCESS_URL", "http://localhost:3000/settings/billing?success=1"),
+		StripeCancelURL:     getEnv("STRIPE_CANCEL_URL", "http://localhost:3000/settings/billing?cancelled=1"),
+		StripeReturnURL:     getEnv("STRIPE_RETURN_URL", "http://localhost:3000/settings/billing"),
+
 		SupabaseURL:        getEnv("SUPABASE_URL", "http://localhost:54321"),
 		SupabaseAnonKey:    os.Getenv("SUPABASE_ANON_KEY"),
 		SupabaseServiceKey: os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
@@ -76,6 +95,9 @@ func Load() *Config {
 		SentryTraceSampleRate: getFloatEnv("SENTRY_TRACES_SAMPLE_RATE", 0),
 		MetricsToken:          os.Getenv("METRICS_TOKEN"),
 		DailyRecipientLimit:   getPositiveIntEnv("DAILY_RECIPIENT_LIMIT", 1000),
+		PlanFreeDailyLimit:    getPositiveIntEnv("PLAN_FREE_DAILY_LIMIT", getPositiveIntEnv("DAILY_RECIPIENT_LIMIT", 1000)),
+		PlanProDailyLimit:     getPositiveIntEnv("PLAN_PRO_DAILY_LIMIT", 10000),
+		PlanScaleDailyLimit:   getPositiveIntEnv("PLAN_SCALE_DAILY_LIMIT", 100000),
 
 		InboundS3Bucket:     getEnv("INBOUND_S3_BUCKET", "sender-api-inbound"),
 		InboundSQSQueueURL:  os.Getenv("INBOUND_SQS_QUEUE_URL"),
@@ -140,6 +162,35 @@ func (c *Config) Validate() error {
 	}
 	if c.OutboundSESTopicArn != "" && strings.TrimSpace(c.AWSESConfigSet) == "" {
 		return fmt.Errorf("AWS_SES_CONFIGSET is required when OUTBOUND_SES_TOPIC_ARN is configured")
+	}
+	if strings.TrimSpace(c.StripeSecretKey) != "" {
+		for key, value := range map[string]string{
+			"STRIPE_WEBHOOK_SECRET": c.StripeWebhookSecret,
+			"STRIPE_PRICE_PRO":      c.StripePricePro,
+			"STRIPE_PRICE_SCALE":    c.StripePriceScale,
+		} {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%s is required when STRIPE_SECRET_KEY is configured", key)
+			}
+		}
+	}
+	if strings.TrimSpace(c.StripeWebhookSecret) != "" && strings.TrimSpace(c.StripeSecretKey) == "" {
+		return fmt.Errorf("STRIPE_SECRET_KEY is required when STRIPE_WEBHOOK_SECRET is configured")
+	}
+	if strings.TrimSpace(c.StripeSecretKey) != "" {
+		for key, value := range map[string]string{
+			"STRIPE_SUCCESS_URL": c.StripeSuccessURL,
+			"STRIPE_CANCEL_URL":  c.StripeCancelURL,
+			"STRIPE_RETURN_URL":  c.StripeReturnURL,
+		} {
+			parsed, err := url.Parse(strings.TrimSpace(value))
+			if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return fmt.Errorf("%s must be an absolute http(s) URL", key)
+			}
+			if c.IsProduction() && parsed.Scheme != "https" {
+				return fmt.Errorf("%s must use HTTPS in production", key)
+			}
+		}
 	}
 	if c.InboundSQSQueueURL != "" && strings.TrimSpace(c.InboundS3Bucket) == "" {
 		return fmt.Errorf("INBOUND_S3_BUCKET is required when INBOUND_SQS_QUEUE_URL is configured")

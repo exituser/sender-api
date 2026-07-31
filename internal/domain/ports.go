@@ -62,6 +62,11 @@ type EmailRepository interface {
 	GetEventsForTeam(ctx context.Context, teamID, emailID uuid.UUID) ([]EmailEvent, error)
 }
 
+type SuppressionRepository interface {
+	Upsert(ctx context.Context, suppression *Suppression) error
+	GetByEmails(ctx context.Context, teamID uuid.UUID, emails []string) ([]Suppression, error)
+}
+
 type TeamRepository interface {
 	Create(ctx context.Context, team *Team) error
 	CreateWithOwner(ctx context.Context, team *Team, member *TeamMember) error
@@ -76,6 +81,10 @@ type TeamRepository interface {
 	UpdateMemberRole(ctx context.Context, teamID, userID uuid.UUID, role TeamMemberRole) error
 	GetMembers(ctx context.Context, teamID uuid.UUID) ([]TeamMemberResponse, error)
 	GetMember(ctx context.Context, teamID, userID uuid.UUID) (*TeamMember, error)
+	CreateInvitation(ctx context.Context, invitation *TeamInvitation) error
+	ListInvitations(ctx context.Context, teamID uuid.UUID) ([]TeamInvitation, error)
+	RevokeInvitation(ctx context.Context, teamID, invitationID uuid.UUID) error
+	AcceptInvitation(ctx context.Context, tokenHash string, userID uuid.UUID) (*TeamInvitation, error)
 }
 
 type ContactRepository interface {

@@ -100,3 +100,27 @@ func TestValidateRejectsInvalidLowVolumeSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateProductionRejectsHTTPStripeReturnURL(t *testing.T) {
+	cfg := &Config{
+		Env:                 "production",
+		CORSOrigins:         "https://app.example.com",
+		DatabaseURL:         "postgresql://db/sender_api",
+		RedisURL:            "rediss://redis.example:6380",
+		SupabaseURL:         "https://project.supabase.co",
+		AWSRegion:           "eu-west-1",
+		MetricsToken:        "metrics-secret",
+		DailyRecipientLimit: 1000,
+		Debug:               false,
+		StripeSecretKey:     "sk_live_test",
+		StripeWebhookSecret: "whsec_test",
+		StripePricePro:      "price_pro",
+		StripePriceScale:    "price_scale",
+		StripeSuccessURL:    "https://app.example.com/success",
+		StripeCancelURL:     "https://app.example.com/cancel",
+		StripeReturnURL:     "http://app.example.com/billing",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected production HTTP Stripe return URL to be rejected")
+	}
+}

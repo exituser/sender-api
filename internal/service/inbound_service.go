@@ -32,6 +32,9 @@ func NewInboundService(
 	deliveryRepo domain.WebhookDeliveryRepository,
 	logger *slog.Logger,
 ) *InboundService {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &InboundService{
 		inboundRepo:  inboundRepo,
 		domainRepo:   domainRepo,
@@ -42,10 +45,14 @@ func NewInboundService(
 }
 
 func (s *InboundService) ProcessEmail(ctx context.Context, teamID uuid.UUID, from string, to []string, subject string, text string, html string, headers map[string]string, rawS3Key string) error {
-	return s.ProcessEmailWithMessageID(ctx, teamID, nil, from, to, subject, text, html, headers, rawS3Key)
+	return s.ProcessEmailWithMessageIDAndAttachments(ctx, teamID, nil, from, to, subject, text, html, headers, nil, rawS3Key)
 }
 
 func (s *InboundService) ProcessEmailWithMessageID(ctx context.Context, teamID uuid.UUID, messageID *string, from string, to []string, subject string, text string, html string, headers map[string]string, rawS3Key string) error {
+	return s.ProcessEmailWithMessageIDAndAttachments(ctx, teamID, messageID, from, to, subject, text, html, headers, nil, rawS3Key)
+}
+
+func (s *InboundService) ProcessEmailWithMessageIDAndAttachments(ctx context.Context, teamID uuid.UUID, messageID *string, from string, to []string, subject string, text string, html string, headers map[string]string, attachments any, rawS3Key string) error {
 	if messageID != nil && strings.TrimSpace(*messageID) != "" {
 		if _, err := s.inboundRepo.GetByMessageID(ctx, teamID, strings.TrimSpace(*messageID)); err == nil {
 			return nil
@@ -53,18 +60,26 @@ func (s *InboundService) ProcessEmailWithMessageID(ctx context.Context, teamID u
 	}
 
 	headersJSON, _ := json.Marshal(headers)
+	attachmentsJSON, err := json.Marshal(attachments)
+	if err != nil {
+		return fmt.Errorf("marshal inbound attachments: %w", err)
+	}
+	if attachments == nil {
+		attachmentsJSON = []byte("[]")
+	}
 
 	inbound := &domain.InboundEmail{
-		ID:        uuid.New(),
-		TeamID:    teamID,
-		MessageID: messageID,
-		From:      from,
-		To:        to,
-		Subject:   &subject,
-		Text:      &text,
-		HTML:      &html,
-		Headers:   headersJSON,
-		RawS3Key:  &rawS3Key,
+		ID:          uuid.New(),
+		TeamID:      teamID,
+		MessageID:   messageID,
+		From:        from,
+		To:          to,
+		Subject:     &subject,
+		Text:        &text,
+		HTML:        &html,
+		Attachments: attachmentsJSON,
+		Headers:     headersJSON,
+		RawS3Key:    &rawS3Key,
 	}
 
 	if err := s.inboundRepo.Create(ctx, inbound); err != nil {
@@ -84,6 +99,14 @@ func (s *InboundService) ProcessEmailWithMessageID(ctx context.Context, teamID u
 
 func (s *InboundService) GetByID(ctx context.Context, id uuid.UUID) (*domain.InboundEmail, error) {
 	return s.inboundRepo.GetByID(ctx, id)
+}
+
+func (s *InboundService) GetByIDForTeam(ctx context.Context, teamID, id uuid.UUID) (*domain.InboundEmail, error) {
+	email, err := s.inboundRepo.GetByID(ctx, id)
+	if err != nil || email.TeamID != teamID {
+		return nil, fmt.Errorf("inbound email not found")
+	}
+	return email, nil
 }
 
 func (s *InboundService) List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*domain.InboundEmailListResponse, error) {
@@ -133,7 +156,7 @@ func (s *InboundService) TeamForRecipients(ctx context.Context, recipients []str
 }
 
 func (s *InboundService) dispatchWebhooks(ctx context.Context, teamID, eventID uuid.UUID, event string, payload any) {
-	if s.deliveryRepo == nil {
+	if s.deliveryRepo == nil || s.webhookRepo == nil {
 		s.logger.Error("webhook delivery repository is not configured", "event", event)
 		return
 	}

@@ -1,9 +1,43 @@
 package service
 
 import (
+	"context"
 	"net"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/sender-api/sender-api/internal/domain"
 )
+
+type sesIdentityProviderStub struct {
+	identity *domain.SESIdentity
+}
+
+func (s *sesIdentityProviderStub) Create(context.Context, string) (*domain.SESIdentity, error) {
+	return s.identity, nil
+}
+
+func (s *sesIdentityProviderStub) Get(context.Context, string) (*domain.SESIdentity, error) {
+	return s.identity, nil
+}
+
+func TestApplySESIdentityBuildsAllDKIMRecords(t *testing.T) {
+	service := NewDomainService(nil, nil, "eu-west-1")
+	d := &domain.Domain{ID: uuid.New(), Name: "example.com", DKIMStatus: "pending"}
+	service.applySESIdentity(d, &domain.SESIdentity{
+		VerifiedForSending: true,
+		VerificationStatus: "success",
+		DKIMStatus:         "success",
+		DKIMTokens:         []string{"token-a", "token-b", "token-c"},
+		SigningHostedZone:  "dkim.amazonses.com.",
+	})
+	if d.SESVerificationStatus != "verified" || d.DKIMStatus != "verified" {
+		t.Fatalf("unexpected SES statuses: ses=%q dkim=%q", d.SESVerificationStatus, d.DKIMStatus)
+	}
+	if len(d.DKIMDNSRecords) != 3 || d.DKIMDNSRecords[1].Host != "token-b._domainkey.example.com" {
+		t.Fatalf("unexpected DKIM records: %+v", d.DKIMDNSRecords)
+	}
+}
 
 func TestContainsInboundMX(t *testing.T) {
 	tests := []struct {
