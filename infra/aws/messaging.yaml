@@ -72,6 +72,8 @@ Resources:
 
   InboundDeadLetterQueue:
     Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       QueueName: !Ref InboundDeadLetterQueueName
       MessageRetentionPeriod: 1209600
@@ -79,6 +81,8 @@ Resources:
 
   InboundQueue:
     Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       QueueName: !Ref InboundQueueName
       MessageRetentionPeriod: 345600
@@ -91,6 +95,8 @@ Resources:
 
   InboundTopic:
     Type: AWS::SNS::Topic
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicName: !Ref InboundTopicName
 
@@ -132,6 +138,8 @@ Resources:
 
   InboundTopicSubscription:
     Type: AWS::SNS::Subscription
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicArn: !Ref InboundTopic
       Protocol: sqs
