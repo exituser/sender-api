@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Low-volume inbound email transport for sender-api: SES to S3 and SNS,
+  SNS to SQS, then the sender-api worker.
+
+Parameters:
+  InboundBucketName:
+    Type: String
+    Default: sender-api-inbound
+    Description: Globally unique S3 bucket name for raw inbound email.
+  InboundTopicName:
+    Type: String
+    Default: sender-api-inbound
+  InboundQueueName:
+    Type: String
+    Default: sender-api-inbound
+  InboundDeadLetterQueueName:
+    Type: String
+    Default: sender-api-inbound-dlq
+  RawEmailPrefix:
+    Type: String
+    Default: raw/
+    Description: Prefix used for raw email objects in S3.
+  RawEmailRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    Description: Retention for raw emails; parsed data remains in the application database.
+
+Resources:
+  InboundBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref InboundBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireRawInboundEmail
+            Prefix: !Ref RawEmailPrefix
+            Status: Enabled
+            ExpirationInDays: !Ref RawEmailRetentionDays
+
+  InboundBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InboundBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSESToStoreInboundEmail
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${InboundBucket.Arn}/${RawEmailPrefix}*"
+            Condition:
+              StringEquals:
+                aws:Referer: !Ref AWS::AccountId
+
+  InboundDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref InboundDeadLetterQueueName
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  InboundQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref InboundQueueName
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      VisibilityTimeout: 120
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt InboundDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  InboundTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Ref InboundTopicName
+
+  InboundTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref InboundTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSESToPublishInboundNotifications
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref InboundTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  InboundQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref InboundQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowInboundTopicToSendMessages
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt InboundQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref InboundTopic
+
+  InboundTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref InboundTopic
+      Protocol: sqs
+      Endpoint: !GetAtt InboundQueue.Arn
+      RawMessageDelivery: false
+
+Outputs:
+  InboundBucketName:
+    Description: S3 bucket that stores raw inbound email.
+    Value: !Ref InboundBucket
+  InboundTopicArn:
+    Description: SNS topic used by the SES receipt rule.
+    Value: !Ref InboundTopic
+  InboundQueueUrl:
+    Description: SQS URL consumed by sender-api/worker.
+    Value: !Ref InboundQueue
+  InboundQueueArn:
+    Description: SQS ARN used by the SNS queue policy.
+    Value: !GetAtt InboundQueue.Arn
+  InboundDeadLetterQueueArn:
+    Description: DLQ ARN for messages that cannot be processed.
+    Value: !GetAtt InboundDeadLetterQueue.Arn

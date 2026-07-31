@@ -194,6 +194,15 @@ distributed tracing is disabled by the low-volume default. The web container
 uses a lightweight `/healthz` endpoint that does not call Supabase, so health
 checks do not create authentication traffic.
 
+### AWS inbound messaging
+
+The optional SES/SNS/SQS/S3 inbound transport is described in
+[`infra/aws/README.md`](infra/aws/README.md). It provisions an encrypted,
+private S3 bucket, SNS-to-SQS delivery with a dead-letter queue, and the
+least-privilege policies required by the SES receipt rule. The receipt rule is
+kept as an explicit rollout step because it changes mail routing for a verified
+domain.
+
 ### Migrations
 
 The first migration creates a fresh database schema. `002_delivery` is kept as
