@@ -1,6 +1,9 @@
 package validator
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 func TestIsValidEmail(t *testing.T) {
 	if !IsValidEmail("person@example.com") {
@@ -20,11 +23,23 @@ func TestIsValidDomain(t *testing.T) {
 	}
 }
 
+func TestCanonicalEmailPreservesLocalPartAndNormalizesDomain(t *testing.T) {
+	if got := CanonicalEmail("User@EXAMPLE.COM"); got != "User@example.com" {
+		t.Fatalf("expected canonical email, got %q", got)
+	}
+}
+
 func TestIsValidURLRejectsPrivateTargets(t *testing.T) {
 	if !IsValidURL("https://example.com/webhook") {
 		t.Fatal("expected public URL")
 	}
 	if IsValidURL("http://127.0.0.1:8080/internal") || IsValidURL("http://localhost/internal") {
 		t.Fatal("expected private URL to be rejected")
+	}
+}
+
+func TestIsPrivateIPRejectsUnroutableIPv4Range(t *testing.T) {
+	if !IsPrivateIP(net.ParseIP("0.1.2.3")) {
+		t.Fatal("expected 0.0.0.0/8 to be rejected")
 	}
 }

@@ -53,6 +53,28 @@ func (r *InboundEmailRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.I
 	return &email, nil
 }
 
+func (r *InboundEmailRepo) GetByMessageID(ctx context.Context, teamID uuid.UUID, messageID string) (*domain.InboundEmail, error) {
+	var email domain.InboundEmail
+	var toJSON, attJSON, headersJSON []byte
+
+	err := r.db.QueryRow(ctx, `
+		SELECT id, team_id, message_id, from_addr, to_addr, subject, text, html, attachments, raw_s3_key, headers, created_at
+		FROM inbound_emails WHERE team_id = $1 AND message_id = $2
+	`, teamID, messageID).Scan(
+		&email.ID, &email.TeamID, &email.MessageID, &email.From,
+		&toJSON, &email.Subject, &email.Text, &email.HTML,
+		&attJSON, &email.RawS3Key, &headersJSON, &email.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = json.Unmarshal(toJSON, &email.To)
+	_ = json.Unmarshal(attJSON, &email.Attachments)
+	_ = json.Unmarshal(headersJSON, &email.Headers)
+	return &email, nil
+}
+
 func (r *InboundEmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*domain.InboundEmailListResponse, error) {
 	var total int
 	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM inbound_emails WHERE team_id = $1`, teamID).Scan(&total)
@@ -81,6 +103,9 @@ func (r *InboundEmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, of
 		}
 		json.Unmarshal(toJSON, &email.To)
 		emails = append(emails, email)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return &domain.InboundEmailListResponse{

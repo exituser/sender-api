@@ -69,6 +69,9 @@ func (r *APIKeyRepo) List(ctx context.Context, teamID uuid.UUID) ([]domain.APIKe
 		}
 		keys = append(keys, k)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return keys, nil
 }
 
@@ -78,7 +81,11 @@ func (r *APIKeyRepo) DeleteForTeam(ctx context.Context, teamID, id uuid.UUID) er
 }
 
 func (r *APIKeyRepo) UpdateLastUsed(ctx context.Context, id uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, id)
+	_, err := r.db.Exec(ctx, `
+		UPDATE api_keys
+		SET last_used_at = NOW()
+		WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < NOW() - INTERVAL '1 minute')
+	`, id)
 	return err
 }
 

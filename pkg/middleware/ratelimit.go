@@ -24,12 +24,19 @@ func RateLimit(redisClient *redis.Client) func(http.Handler) http.Handler {
 
 			count, err := redisClient.Incr(ctx, key).Result()
 			if err != nil {
-				next.ServeHTTP(w, r)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprint(w, `{"error":"rate limiter unavailable"}`)
 				return
 			}
 
 			if count == 1 {
-				redisClient.Expire(ctx, key, time.Second)
+				if err := redisClient.Expire(ctx, key, time.Second).Err(); err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					fmt.Fprint(w, `{"error":"rate limiter unavailable"}`)
+					return
+				}
 			}
 
 			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", limit))

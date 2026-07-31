@@ -57,6 +57,9 @@ func (h *ContactHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ContactHandler) List(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
 	_, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return
@@ -85,6 +88,9 @@ func (h *ContactHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ContactHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
 	_, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return
@@ -192,6 +198,10 @@ func (h *ContactHandler) ImportCSV(w http.ResponseWriter, r *http.Request) {
 
 	if len(records) < 2 {
 		writeError(w, "csv must have header row and at least one data row", http.StatusBadRequest)
+		return
+	}
+	if len(records)-1 > 10000 {
+		writeError(w, "maximum 10000 contacts per import", http.StatusBadRequest)
 		return
 	}
 

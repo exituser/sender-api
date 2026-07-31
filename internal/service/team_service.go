@@ -46,10 +46,6 @@ func (s *TeamService) Create(ctx context.Context, userID uuid.UUID, req *domain.
 		Plan: domain.PlanFree,
 	}
 
-	if err := s.teamRepo.Create(ctx, team); err != nil {
-		return nil, fmt.Errorf("failed to create team: %w", err)
-	}
-
 	member := &domain.TeamMember{
 		ID:     uuid.New(),
 		TeamID: team.ID,
@@ -57,9 +53,8 @@ func (s *TeamService) Create(ctx context.Context, userID uuid.UUID, req *domain.
 		Role:   domain.TeamMemberRoleOwner,
 	}
 
-	if err := s.teamRepo.AddMember(ctx, member); err != nil {
-		s.teamRepo.Delete(ctx, team.ID)
-		return nil, fmt.Errorf("failed to add owner: %w", err)
+	if err := s.teamRepo.CreateWithOwner(ctx, team, member); err != nil {
+		return nil, fmt.Errorf("failed to create team: %w", err)
 	}
 
 	s.logger.Info("team created", "team_id", team.ID, "name", team.Name)

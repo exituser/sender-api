@@ -29,6 +29,7 @@ func (s *ContactService) Create(ctx context.Context, teamID uuid.UUID, req *doma
 	if !validator.IsValidEmail(req.Email) {
 		return nil, fmt.Errorf("invalid contact email")
 	}
+	req.Email = validator.CanonicalEmail(req.Email)
 	existing, _ := s.contactRepo.GetByEmail(ctx, teamID, req.Email)
 	if existing != nil {
 		return nil, fmt.Errorf("contact with email %s already exists", req.Email)
@@ -68,6 +69,9 @@ func (s *ContactService) List(ctx context.Context, teamID uuid.UUID, limit, offs
 	if limit > 100 {
 		limit = 100
 	}
+	if offset < 0 {
+		offset = 0
+	}
 	return s.contactRepo.List(ctx, teamID, limit, offset)
 }
 
@@ -84,7 +88,8 @@ func (s *ContactService) Update(ctx context.Context, teamID, id uuid.UUID, req *
 		if !validator.IsValidEmail(*req.Email) {
 			return nil, fmt.Errorf("invalid contact email")
 		}
-		contact.Email = *req.Email
+		canonical := validator.CanonicalEmail(*req.Email)
+		contact.Email = canonical
 	}
 	if req.FirstName != nil {
 		contact.FirstName = req.FirstName
@@ -111,6 +116,9 @@ func (s *ContactService) Delete(ctx context.Context, teamID, id uuid.UUID) error
 }
 
 func (s *ContactService) ImportCSV(ctx context.Context, teamID uuid.UUID, contacts []*domain.CreateContactRequest) (int, error) {
+	if len(contacts) > 10000 {
+		return 0, fmt.Errorf("maximum 10000 contacts per import")
+	}
 	var created []*domain.Contact
 	for _, req := range contacts {
 		if req == nil {
@@ -119,6 +127,7 @@ func (s *ContactService) ImportCSV(ctx context.Context, teamID uuid.UUID, contac
 		if !validator.IsValidEmail(req.Email) {
 			return 0, fmt.Errorf("invalid contact email: %s", req.Email)
 		}
+		req.Email = validator.CanonicalEmail(req.Email)
 		contact := &domain.Contact{
 			ID:         uuid.New(),
 			TeamID:     teamID,

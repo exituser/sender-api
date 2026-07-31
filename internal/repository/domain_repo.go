@@ -55,7 +55,7 @@ func (r *DomainRepo) GetByName(ctx context.Context, teamID uuid.UUID, name strin
 	var d domain.Domain
 	err := r.db.QueryRow(ctx, `
 		SELECT id, team_id, name, status, verification_token, spf_status, dkim_status, dmarc_status, created_at
-		FROM domains WHERE team_id = $1 AND name = $2
+		FROM domains WHERE team_id = $1 AND lower(trim(trailing '.' FROM name)) = lower(trim(trailing '.' FROM $2))
 	`, teamID, name).Scan(
 		&d.ID, &d.TeamID, &d.Name, &d.Status, &d.VerificationToken,
 		&d.SPFStatus, &d.DKIMStatus, &d.DMARCStatus, &d.CreatedAt,
@@ -86,6 +86,9 @@ func (r *DomainRepo) List(ctx context.Context, teamID uuid.UUID) (*domain.Domain
 			return nil, err
 		}
 		domains = append(domains, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return &domain.DomainListResponse{Data: domains}, nil
@@ -124,7 +127,8 @@ func (r *DomainRepo) DeleteForTeam(ctx context.Context, teamID, id uuid.UUID) er
 func (r *DomainRepo) GetTeamByDomain(ctx context.Context, domainName string) (uuid.UUID, error) {
 	var teamID uuid.UUID
 	err := r.db.QueryRow(ctx, `
-		SELECT team_id FROM domains WHERE name = $1 AND status = 'verified'
+		SELECT team_id FROM domains
+		WHERE lower(trim(trailing '.' FROM name)) = $1 AND status = 'verified'
 	`, domainName).Scan(&teamID)
 	return teamID, err
 }

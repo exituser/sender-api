@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/sender-api/sender-api/internal/auth"
@@ -14,9 +15,32 @@ type ErrorResponse struct {
 }
 
 func writeError(w http.ResponseWriter, msg string, code int) {
+	if code >= http.StatusInternalServerError || isInternalErrorMessage(msg) {
+		msg = "internal server error"
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
+}
+
+func isInternalErrorMessage(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, marker := range []string{
+		"failed to create ",
+		"failed to save ",
+		"failed to update ",
+		"failed to delete ",
+		"database",
+		"duplicate key",
+		"pgx",
+		"pq:",
+		"sql:",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeErrorf(w http.ResponseWriter, code int, format string, args ...any) {

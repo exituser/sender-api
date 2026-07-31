@@ -48,17 +48,24 @@ func (h *EmailHandler) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.emailService.Send(r.Context(), teamID, &req)
+	resp, created, err := h.emailService.SendWithIdempotency(r.Context(), teamID, &req, r.Header.Get("Idempotency-Key"))
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQueueUnavailable) {
 			status = http.StatusServiceUnavailable
 		}
+		if errors.Is(err, service.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
 		writeError(w, err.Error(), status)
 		return
 	}
 
-	writeJSON(w, resp, http.StatusCreated)
+	if created {
+		writeJSON(w, resp, http.StatusCreated)
+		return
+	}
+	writeJSON(w, resp, http.StatusOK)
 }
 
 func (h *EmailHandler) BatchSend(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +91,11 @@ func (h *EmailHandler) BatchSend(w http.ResponseWriter, r *http.Request) {
 
 	responses, err := h.emailService.BatchSend(r.Context(), teamID, reqs)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+		status := http.StatusBadRequest
+		if errors.Is(err, service.ErrQueueUnavailable) {
+			status = http.StatusServiceUnavailable
+		}
+		writeError(w, err.Error(), status)
 		return
 	}
 

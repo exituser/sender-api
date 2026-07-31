@@ -21,6 +21,30 @@ func IsValidEmail(email string) bool {
 	return err == nil && address.Address == email && emailRegex.MatchString(email)
 }
 
+func EmailDomain(email string) string {
+	address, err := mail.ParseAddress(strings.TrimSpace(email))
+	if err != nil {
+		return ""
+	}
+	separator := strings.LastIndex(address.Address, "@")
+	if separator < 0 || separator == len(address.Address)-1 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSuffix(address.Address[separator+1:], "."))
+}
+
+func CanonicalEmail(email string) string {
+	address, err := mail.ParseAddress(strings.TrimSpace(email))
+	if err != nil {
+		return strings.TrimSpace(email)
+	}
+	separator := strings.LastIndex(address.Address, "@")
+	if separator < 0 || separator == len(address.Address)-1 {
+		return address.Address
+	}
+	return address.Address[:separator] + "@" + strings.ToLower(address.Address[separator+1:])
+}
+
 func IsValidSlug(slug string) bool {
 	return slugRegex.MatchString(slug)
 }
@@ -31,7 +55,7 @@ func SanitizeString(s string) string {
 
 func IsValidURL(rawURL string) bool {
 	parsed, err := url.Parse(rawURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+	if err != nil || len(rawURL) > 2048 || (strings.ToLower(parsed.Scheme) != "http" && strings.ToLower(parsed.Scheme) != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" {
 		return false
 	}
 	return !IsPrivateHost(parsed.Hostname())
@@ -81,5 +105,11 @@ func IsPrivateHost(host string) bool {
 }
 
 func IsPrivateIP(ip net.IP) bool {
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] == 0 {
+			return true
+		}
+		ip = ip4
+	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
 }

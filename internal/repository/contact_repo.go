@@ -92,6 +92,9 @@ func (r *ContactRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset 
 		}
 		contacts = append(contacts, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return &domain.ContactListResponse{
 		Data:   contacts,

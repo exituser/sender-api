@@ -36,6 +36,10 @@ func VerifySignature(payload []byte, signature string, secret string) bool {
 }
 
 func SendWebhook(url string, secret string, event string, payload any) error {
+	return SendWebhookWithID(context.Background(), uuid.New(), url, secret, event, payload)
+}
+
+func SendWebhookWithID(ctx context.Context, deliveryID uuid.UUID, url string, secret string, event string, payload any) error {
 	if !validator.IsValidURL(url) {
 		return fmt.Errorf("unsafe webhook url")
 	}
@@ -45,7 +49,7 @@ func SendWebhook(url string, secret string, event string, payload any) error {
 	}
 
 	webhookPayload := WebhookPayload{
-		ID:        uuid.New().String(),
+		ID:        deliveryID.String(),
 		Event:     event,
 		Payload:   payloadBytes,
 		Timestamp: time.Now().UTC(),
@@ -60,19 +64,23 @@ func SendWebhook(url string, secret string, event string, payload any) error {
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 		Transport: &http.Transport{
 			DialContext: safeDialContext,
 		},
 	}
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Webhook-Signature", signature)
 		req.Header.Set("X-Webhook-Event", event)
+		req.Header.Set("X-Webhook-Delivery-ID", deliveryID.String())
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -80,7 +88,7 @@ func SendWebhook(url string, secret string, event string, payload any) error {
 		} else {
 			responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 			resp.Body.Close()
-			if resp.StatusCode < 400 {
+			if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 				return nil
 			}
 			lastErr = fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(responseBody))
@@ -89,7 +97,13 @@ func SendWebhook(url string, secret string, event string, payload any) error {
 			}
 		}
 		if attempt < 2 {
-			time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+			timer := time.NewTimer(time.Duration(attempt+1) * 250 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			}
 		}
 	}
 	return lastErr
@@ -100,7 +114,7 @@ func safeDialContext(ctx context.Context, network, address string) (net.Conn, er
 	if err != nil {
 		return nil, fmt.Errorf("invalid webhook address: %w", err)
 	}
-	ipAddresses, err := net.LookupIP(host)
+	ipAddresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if err != nil {
 		return nil, fmt.Errorf("resolve webhook host: %w", err)
 	}

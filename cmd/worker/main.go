@@ -5,10 +5,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -26,25 +30,39 @@ func main() {
 	}))
 
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	logger.Info("starting sender-api worker")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	startupCtx, startupCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer startupCancel()
 
-	dbPool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	dbPool, err := pgxpool.New(startupCtx, cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("failed to connect to database", "error", err)
 		os.Exit(1)
 	}
 	defer dbPool.Close()
+	if err := dbPool.Ping(startupCtx); err != nil {
+		logger.Error("failed to ping database", "error", err)
+		os.Exit(1)
+	}
 
 	redisClient := redis.NewClient(&redis.Options{
 		Addr: cfg.RedisURL,
 	})
 	defer redisClient.Close()
+	if err := redisClient.Ping(startupCtx).Err(); err != nil {
+		logger.Error("failed to connect to redis", "error", err)
+		os.Exit(1)
+	}
 
-	awsCfg, err := awscfg.LoadDefaultConfig(ctx,
+	awsCfg, err := awscfg.LoadDefaultConfig(startupCtx,
 		awscfg.WithRegion(cfg.AWSRegion),
 	)
 	if err != nil {
@@ -55,15 +73,42 @@ func main() {
 	sesClient := sesv2.NewFromConfig(awsCfg)
 
 	emailRepo := repository.NewEmailRepo(dbPool)
+	domainRepo := repository.NewDomainRepo(dbPool)
+	inboundRepo := repository.NewInboundEmailRepo(dbPool)
 	webhookRepo := repository.NewWebhookRepo(dbPool)
+	webhookDeliveryRepo := repository.NewWebhookDeliveryRepo(dbPool)
 	redisQueue := queue.NewRedisQueue(redisClient)
 	sesMailer := mailer.NewSESMailer(sesClient, cfg.AWSESConfigSet, logger)
 
-	emailService := service.NewEmailService(emailRepo, redisQueue, sesMailer, webhookRepo, logger)
+	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger)
+	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
 
 	emailWorker := worker.NewEmailWorker(emailService, redisQueue, logger)
+	webhookWorker := worker.NewWebhookWorker(webhookDeliveryRepo, logger)
 
-	go emailWorker.Start(ctx)
+	var workers sync.WaitGroup
+	startWorker := func(run func(context.Context)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			run(ctx)
+		}()
+	}
+	startWorker(emailWorker.Start)
+	startWorker(webhookWorker.Start)
+	if cfg.InboundSQSQueueURL != "" {
+		inboundWorker := worker.NewInboundWorker(
+			s3.NewFromConfig(awsCfg),
+			sqs.NewFromConfig(awsCfg),
+			cfg.InboundSQSQueueURL,
+			cfg.InboundS3Bucket,
+			cfg.AWSRegion,
+			cfg.InboundSNSTopicArn,
+			inboundService,
+			logger,
+		)
+		startWorker(inboundWorker.Start)
+	}
 
 	logger.Info("worker is running")
 
@@ -73,5 +118,6 @@ func main() {
 
 	logger.Info("shutting down worker...")
 	cancel()
+	workers.Wait()
 	logger.Info("worker exited")
 }

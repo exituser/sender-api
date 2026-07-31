@@ -29,13 +29,13 @@ func (r *EmailRepo) Create(ctx context.Context, email *domain.Email) error {
 	headersJSON, _ := json.Marshal(email.Headers)
 
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO emails (id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, html, text, reply_to, attachments, status, tags, metadata, headers, scheduled_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		INSERT INTO emails (id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, html, text, reply_to, attachments, status, tags, metadata, headers, idempotency_key, idempotency_hash, scheduled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 	`,
 		email.ID, email.TeamID, email.APIKeyID, email.From,
 		toJSON, ccJSON, bccJSON,
 		email.Subject, email.HTML, email.Text, replyToJSON, attachmentsJSON, email.Status,
-		tagsJSON, metadataJSON, headersJSON, email.ScheduledAt,
+		tagsJSON, metadataJSON, headersJSON, email.IdempotencyKey, email.IdempotencyHash, email.ScheduledAt,
 	)
 	return err
 }
@@ -45,13 +45,13 @@ func (r *EmailRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Email, e
 	var toJSON, ccJSON, bccJSON, replyToJSON, attachmentsJSON, tagsJSON, metadataJSON, headersJSON []byte
 
 	err := r.db.QueryRow(ctx, `
-		SELECT id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, html, text, reply_to, attachments, status, tags, metadata, headers, scheduled_at, sent_at, created_at
+		SELECT id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, html, text, reply_to, attachments, status, tags, metadata, headers, idempotency_key, idempotency_hash, provider_message_id, sending_at, scheduled_at, sent_at, created_at
 		FROM emails WHERE id = $1
 	`, id).Scan(
 		&email.ID, &email.TeamID, &email.APIKeyID, &email.From,
 		&toJSON, &ccJSON, &bccJSON,
 		&email.Subject, &email.HTML, &email.Text, &replyToJSON, &attachmentsJSON, &email.Status,
-		&tagsJSON, &metadataJSON, &headersJSON,
+		&tagsJSON, &metadataJSON, &headersJSON, &email.IdempotencyKey, &email.IdempotencyHash, &email.ProviderMessageID, &email.SendingAt,
 		&email.ScheduledAt, &email.SentAt, &email.CreatedAt,
 	)
 	if err != nil {
@@ -76,6 +76,49 @@ func (r *EmailRepo) GetByIDForTeam(ctx context.Context, teamID, id uuid.UUID) (*
 		return nil, fmt.Errorf("email not found")
 	}
 	return email, nil
+}
+
+func (r *EmailRepo) GetByIdempotencyKey(ctx context.Context, teamID uuid.UUID, key string) (*domain.Email, error) {
+	var id uuid.UUID
+	if err := r.db.QueryRow(ctx, `
+		SELECT id FROM emails WHERE team_id = $1 AND idempotency_key = $2
+	`, teamID, key).Scan(&id); err != nil {
+		return nil, err
+	}
+	return r.GetByIDForTeam(ctx, teamID, id)
+}
+
+func (r *EmailRepo) GetByProviderMessageID(ctx context.Context, messageID string) (*domain.Email, error) {
+	var id uuid.UUID
+	if err := r.db.QueryRow(ctx, `
+		SELECT id FROM emails WHERE provider_message_id = $1
+	`, messageID).Scan(&id); err != nil {
+		return nil, err
+	}
+	return r.GetByID(ctx, id)
+}
+
+func (r *EmailRepo) SetProviderMessageID(ctx context.Context, id uuid.UUID, messageID string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE emails SET provider_message_id = $1 WHERE id = $2
+	`, messageID, id)
+	return err
+}
+
+func (r *EmailRepo) ClaimForSending(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE emails SET status = 'sending', sending_at = NOW()
+		WHERE id = $1 AND status = 'queued'
+	`, id)
+	return tag.RowsAffected() == 1, err
+}
+
+func (r *EmailRepo) CancelQueued(ctx context.Context, teamID, id uuid.UUID) (bool, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE emails SET status = 'cancelled'
+		WHERE id = $1 AND team_id = $2 AND status = 'queued'
+	`, id, teamID)
+	return tag.RowsAffected() == 1, err
 }
 
 func (r *EmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*domain.EmailListResponse, error) {
@@ -107,6 +150,9 @@ func (r *EmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset in
 		json.Unmarshal(toJSON, &email.To)
 		emails = append(emails, email)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return &domain.EmailListResponse{
 		Data:   emails,
@@ -118,6 +164,11 @@ func (r *EmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset in
 
 func (r *EmailRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.EmailStatus) error {
 	query := `UPDATE emails SET status = $1`
+	if status == domain.EmailStatusSending {
+		query += `, sending_at = NOW()`
+	} else {
+		query += `, sending_at = NULL`
+	}
 	if status == domain.EmailStatusSent {
 		query += `, sent_at = NOW()`
 	}
@@ -127,13 +178,12 @@ func (r *EmailRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domai
 	return err
 }
 
-func (r *EmailRepo) UpdateStatusForTeam(ctx context.Context, teamID, id uuid.UUID, status domain.EmailStatus) error {
-	query := `UPDATE emails SET status = $1`
-	if status == domain.EmailStatusSent {
-		query += `, sent_at = NOW()`
-	}
-	query += ` WHERE id = $2 AND team_id = $3`
-	_, err := r.db.Exec(ctx, query, status, id, teamID)
+func (r *EmailRepo) ResetSendingToQueued(ctx context.Context) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE emails SET status = 'queued', sending_at = NULL
+		WHERE status = 'sending'
+		  AND (sending_at IS NULL OR sending_at < NOW() - INTERVAL '10 minutes')
+	`)
 	return err
 }
 
@@ -178,7 +228,7 @@ func (r *EmailRepo) GetEvents(ctx context.Context, emailID uuid.UUID) ([]domain.
 		json.Unmarshal(dataJSON, &event.Data)
 		events = append(events, event)
 	}
-	return events, nil
+	return events, rows.Err()
 }
 
 func (r *EmailRepo) GetEventsForTeam(ctx context.Context, teamID, emailID uuid.UUID) ([]domain.EmailEvent, error) {

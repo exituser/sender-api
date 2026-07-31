@@ -2,17 +2,59 @@ package domain
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+type DeliveryError struct {
+	Err       error
+	Retryable bool
+}
+
+func (e *DeliveryError) Error() string {
+	if e == nil || e.Err == nil {
+		return "email delivery failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *DeliveryError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func NewDeliveryError(err error, retryable bool) error {
+	if err == nil {
+		return fmt.Errorf("email delivery failed")
+	}
+	return &DeliveryError{Err: err, Retryable: retryable}
+}
+
+func IsRetryableDeliveryError(err error) bool {
+	var deliveryErr *DeliveryError
+	if errors.As(err, &deliveryErr) {
+		return deliveryErr.Retryable
+	}
+	return true
+}
 
 type EmailRepository interface {
 	Create(ctx context.Context, email *Email) error
 	GetByID(ctx context.Context, id uuid.UUID) (*Email, error)
 	GetByIDForTeam(ctx context.Context, teamID, id uuid.UUID) (*Email, error)
+	GetByIdempotencyKey(ctx context.Context, teamID uuid.UUID, key string) (*Email, error)
+	GetByProviderMessageID(ctx context.Context, messageID string) (*Email, error)
+	SetProviderMessageID(ctx context.Context, id uuid.UUID, messageID string) error
+	ClaimForSending(ctx context.Context, id uuid.UUID) (bool, error)
+	CancelQueued(ctx context.Context, teamID, id uuid.UUID) (bool, error)
+	ResetSendingToQueued(ctx context.Context) error
 	List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*EmailListResponse, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status EmailStatus) error
-	UpdateStatusForTeam(ctx context.Context, teamID, id uuid.UUID, status EmailStatus) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	DeleteForTeam(ctx context.Context, teamID, id uuid.UUID) error
 	AddEvent(ctx context.Context, event *EmailEvent) error
@@ -22,6 +64,7 @@ type EmailRepository interface {
 
 type TeamRepository interface {
 	Create(ctx context.Context, team *Team) error
+	CreateWithOwner(ctx context.Context, team *Team, member *TeamMember) error
 	GetByID(ctx context.Context, id uuid.UUID) (*Team, error)
 	GetBySlug(ctx context.Context, slug string) (*Team, error)
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]Team, error)
@@ -73,6 +116,7 @@ type APIKeyRepository interface {
 type InboundEmailRepository interface {
 	Create(ctx context.Context, email *InboundEmail) error
 	GetByID(ctx context.Context, id uuid.UUID) (*InboundEmail, error)
+	GetByMessageID(ctx context.Context, teamID uuid.UUID, messageID string) (*InboundEmail, error)
 	List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*InboundEmailListResponse, error)
 }
 
@@ -88,12 +132,23 @@ type WebhookRepository interface {
 	GetByEvent(ctx context.Context, teamID uuid.UUID, event string) ([]Webhook, error)
 }
 
+type WebhookDeliveryRepository interface {
+	CreateDelivery(ctx context.Context, delivery *WebhookDelivery) error
+	ClaimDelivery(ctx context.Context) (*WebhookDelivery, error)
+	MarkDelivered(ctx context.Context, id uuid.UUID) error
+	MarkFailed(ctx context.Context, id uuid.UUID, reason string, retryAt time.Time) error
+	RecoverStale(ctx context.Context) error
+}
+
 type EmailSender interface {
-	Send(ctx context.Context, email *Email) error
+	Send(ctx context.Context, email *Email) (string, error)
 }
 
 type EmailQueue interface {
 	Enqueue(ctx context.Context, emailID string) error
+	Schedule(ctx context.Context, emailID string, at time.Time) error
+	Reschedule(ctx context.Context, emailID string, at time.Time) error
+	PromoteScheduled(ctx context.Context) error
 	Dequeue(ctx context.Context) (string, error)
 	Ack(ctx context.Context, emailID string) error
 	Requeue(ctx context.Context, emailID string, countAttempt bool) error

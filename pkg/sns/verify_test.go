@@ -1,0 +1,38 @@
+package sns
+
+import (
+	"testing"
+	"time"
+)
+
+func TestStringToSignUsesSNSCanonicalOrder(t *testing.T) {
+	got := StringToSign(Notification{
+		Type:      "Notification",
+		Message:   "payload",
+		MessageID: "message-id",
+		Subject:   "subject",
+		Timestamp: "2026-07-31T12:00:00Z",
+		TopicArn:  "arn:aws:sns:eu-west-1:123:topic",
+	})
+	want := "Message\npayload\nMessageId\nmessage-id\nSubject\nsubject\nTimestamp\n2026-07-31T12:00:00Z\nTopicArn\narn:aws:sns:eu-west-1:123:topic\nType\nNotification\n"
+	if got != want {
+		t.Fatalf("unexpected canonical string:\n%q", got)
+	}
+}
+
+func TestVerifyNotificationRejectsStaleAndUnsafeMessagesBeforeNetwork(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		item Notification
+	}{
+		{name: "stale", item: Notification{Type: "Notification", Message: "x", MessageID: "id", Timestamp: time.Now().Add(-time.Hour).Format(time.RFC3339), TopicArn: "arn", Signature: "x", SigningCertURL: "https://sns.eu-west-1.amazonaws.com/cert.pem"}},
+		{name: "unsafe certificate host", item: Notification{Type: "Notification", Message: "x", MessageID: "id", Timestamp: time.Now().Format(time.RFC3339), TopicArn: "arn", Signature: "x", SigningCertURL: "https://example.com/cert.pem"}},
+		{name: "missing signature version", item: Notification{Type: "Notification", Message: "x", MessageID: "id", Timestamp: time.Now().Format(time.RFC3339), TopicArn: "arn", Signature: "x", SigningCertURL: "https://sns.eu-west-1.amazonaws.com/cert.pem"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := VerifyNotification(t.Context(), test.item, "eu-west-1", time.Now()); err == nil {
+				t.Fatal("expected SNS notification to be rejected")
+			}
+		})
+	}
+}

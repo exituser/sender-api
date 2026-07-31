@@ -65,6 +65,9 @@ func (r *WebhookRepo) List(ctx context.Context, teamID uuid.UUID) (*domain.Webho
 		}
 		webhooks = append(webhooks, w)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return &domain.WebhookListResponse{Data: webhooks}, nil
 }
@@ -112,5 +115,5 @@ func (r *WebhookRepo) GetByEvent(ctx context.Context, teamID uuid.UUID, event st
 		}
 		webhooks = append(webhooks, w)
 	}
-	return webhooks, nil
+	return webhooks, rows.Err()
 }

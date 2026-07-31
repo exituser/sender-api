@@ -25,6 +25,27 @@ func (r *TeamRepo) Create(ctx context.Context, team *domain.Team) error {
 	return err
 }
 
+func (r *TeamRepo) CreateWithOwner(ctx context.Context, team *domain.Team, member *domain.TeamMember) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO teams (id, name, slug, plan)
+		VALUES ($1, $2, $3, $4)
+	`, team.ID, team.Name, team.Slug, team.Plan); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO team_members (id, team_id, user_id, role)
+		VALUES ($1, $2, $3, $4)
+	`, member.ID, member.TeamID, member.UserID, member.Role); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (r *TeamRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Team, error) {
 	var team domain.Team
 	err := r.db.QueryRow(ctx, `
@@ -136,7 +157,7 @@ func (r *TeamRepo) GetMembers(ctx context.Context, teamID uuid.UUID) ([]domain.T
 		}
 		members = append(members, m)
 	}
-	return members, nil
+	return members, rows.Err()
 }
 
 func (r *TeamRepo) GetMember(ctx context.Context, teamID, userID uuid.UUID) (*domain.TeamMember, error) {

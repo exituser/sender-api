@@ -54,6 +54,9 @@ func (h *DomainHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DomainHandler) List(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
 	_, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return
@@ -69,6 +72,9 @@ func (h *DomainHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DomainHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
 	_, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return

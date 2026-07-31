@@ -2,49 +2,36 @@ package handler
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"net/mail"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/sender-api/sender-api/internal/inbound"
 	"github.com/sender-api/sender-api/internal/service"
+	"github.com/sender-api/sender-api/pkg/sns"
 )
 
 type InboundHandler struct {
 	inboundService *service.InboundService
+	inboundToken   string
+	awsRegion      string
+	snsTopicArn    string
 }
 
-func NewInboundHandler(inboundService *service.InboundService) *InboundHandler {
-	return &InboundHandler{inboundService: inboundService}
+func NewInboundHandler(inboundService *service.InboundService, inboundToken, awsRegion, snsTopicArn string) *InboundHandler {
+	return &InboundHandler{inboundService: inboundService, inboundToken: inboundToken, awsRegion: awsRegion, snsTopicArn: snsTopicArn}
 }
 
 func (h *InboundHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	return r
-}
-
-type SESNotification struct {
-	Type      string            `json:"type"`
-	Message   string            `json:"message"`
-	Timestamp string            `json:"timestamp"`
-	Receipt   SESReceipt        `json:"receipt"`
-	Content   string            `json:"content"`
-	MessageID string            `json:"messageId"`
-	Headers   map[string]string `json:"headers,omitempty"`
-}
-
-type SESReceipt struct {
-	Action struct {
-		Type       string `json:"type"`
-		BucketName string `json:"bucketName"`
-		ObjectKey  string `json:"objectKey"`
-	} `json:"action"`
 }
 
 func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request) {
@@ -56,23 +43,60 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 	}
 	defer r.Body.Close()
 
-	var notification SESNotification
-	if err := json.Unmarshal(body, &notification); err != nil {
+	var envelope inbound.SNSNotification
+	if err := json.Unmarshal(body, &envelope); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
 
-	if notification.Type == "Notification" && notification.Message != "" {
-		var msgContent SESNotification
-		if err := json.Unmarshal([]byte(notification.Message), &msgContent); err != nil {
+	var notification *inbound.SESNotification
+	if envelope.Type == "Notification" && envelope.Message != "" {
+		if err := sns.VerifyNotification(r.Context(), sns.Notification{
+			Type:             envelope.Type,
+			Message:          envelope.Message,
+			MessageID:        envelope.MessageID,
+			Subject:          envelope.Subject,
+			Timestamp:        envelope.Timestamp,
+			TopicArn:         envelope.TopicArn,
+			SigningCertURL:   envelope.SigningCertURL,
+			Signature:        envelope.Signature,
+			SignatureVersion: envelope.SignatureVersion,
+		}, h.awsRegion, time.Now().UTC()); err != nil {
+			writeError(w, "invalid SNS notification", http.StatusUnauthorized)
+			return
+		}
+		if h.snsTopicArn != "" && envelope.TopicArn != h.snsTopicArn {
+			writeError(w, "invalid SNS notification", http.StatusUnauthorized)
+			return
+		}
+		msgContent, err := inbound.DecodeNotification([]byte(envelope.Message))
+		if err != nil {
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]string{"status": "ignored"})
 			return
 		}
 		notification = msgContent
+		if notification.MessageID == "" {
+			notification.MessageID = envelope.MessageID
+		}
+	} else {
+		providedToken := r.Header.Get("X-Inbound-Token")
+		if h.inboundToken == "" {
+			writeError(w, "inbound webhook token is not configured", http.StatusServiceUnavailable)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(h.inboundToken)) != 1 {
+			writeError(w, "invalid inbound webhook token", http.StatusUnauthorized)
+			return
+		}
+		notification, err = inbound.DecodeNotification(body)
+		if err != nil {
+			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
 	}
 
-	if notification.Content == "" {
+	if notification == nil || notification.Content == "" {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "no content"})
 		return
@@ -86,7 +110,11 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	teamID, err := h.teamForRecipients(r.Context(), to)
+	routingRecipients := to
+	if len(notification.Receipt.Recipients) > 0 {
+		routingRecipients = notification.Receipt.Recipients
+	}
+	teamID, err := h.teamForRecipients(r.Context(), routingRecipients)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "domain not found"})
@@ -98,11 +126,17 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 		rawS3Key = notification.Receipt.Action.ObjectKey
 	}
 
-	err = h.inboundService.ProcessEmail(
+	var messageID *string
+	if strings.TrimSpace(notification.MessageID) != "" {
+		value := strings.TrimSpace(notification.MessageID)
+		messageID = &value
+	}
+	err = h.inboundService.ProcessEmailWithMessageID(
 		r.Context(),
 		teamID,
+		messageID,
 		from,
-		to,
+		routingRecipients,
 		subject,
 		notification.Content,
 		"",
@@ -119,43 +153,17 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 }
 
 func (h *InboundHandler) teamForRecipients(ctx context.Context, recipients []string) (uuid.UUID, error) {
-	var teamID uuid.UUID
-	for _, recipient := range recipients {
-		domainPart := inboundRecipientDomain(recipient)
-		if domainPart == "" {
-			return uuid.Nil, fmt.Errorf("invalid recipient domain")
-		}
-		candidate, err := h.inboundService.GetTeamByDomain(ctx, domainPart)
-		if err != nil {
-			return uuid.Nil, err
-		}
-		if teamID == uuid.Nil {
-			teamID = candidate
-			continue
-		}
-		if candidate != teamID {
-			return uuid.Nil, fmt.Errorf("recipients belong to different teams")
-		}
-	}
-	if teamID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("recipient team not found")
-	}
-	return teamID, nil
+	return h.inboundService.TeamForRecipients(ctx, recipients)
 }
 
 func inboundRecipientDomain(address string) string {
-	parsed, err := mail.ParseAddress(address)
-	if err != nil {
-		return ""
-	}
-	separator := strings.LastIndex(parsed.Address, "@")
-	if separator < 0 || separator == len(parsed.Address)-1 {
-		return ""
-	}
-	return strings.ToLower(strings.TrimSuffix(parsed.Address[separator+1:], "."))
+	return inbound.RecipientDomain(address)
 }
 
 func (h *InboundHandler) List(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
 	_, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return
@@ -180,22 +188,9 @@ func (h *InboundHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func extractInboundHeaders(content string) (string, []string, string) {
-	message, err := mail.ReadMessage(strings.NewReader(content))
+	message, err := inbound.ParseRawMessage(content)
 	if err != nil {
 		return "", nil, ""
 	}
-
-	fromAddress, err := mail.ParseAddress(message.Header.Get("From"))
-	if err != nil {
-		return "", nil, ""
-	}
-	recipients, err := mail.ParseAddressList(message.Header.Get("To"))
-	if err != nil {
-		return "", nil, ""
-	}
-	to := make([]string, 0, len(recipients))
-	for _, recipient := range recipients {
-		to = append(to, recipient.Address)
-	}
-	return fromAddress.Address, to, message.Header.Get("Subject")
+	return message.From, message.To, message.Subject
 }

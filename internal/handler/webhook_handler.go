@@ -52,7 +52,8 @@ func (h *WebhookHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if !validator.IsValidURL(req.URL) || len(req.Events) == 0 {
+	req.URL = strings.TrimSpace(req.URL)
+	if !validator.IsValidURL(req.URL) || len(req.Events) == 0 || len(req.Events) > 50 {
 		writeError(w, "valid url and at least one event are required", http.StatusBadRequest)
 		return
 	}
@@ -99,6 +100,9 @@ func (h *WebhookHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WebhookHandler) List(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
 	_, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return
@@ -114,6 +118,9 @@ func (h *WebhookHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WebhookHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	if !requirePermission(w, r, "read") {
+		return
+	}
 	_, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return
@@ -160,12 +167,16 @@ func (h *WebhookHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.URL != nil && !validator.IsValidURL(*req.URL) {
-		writeError(w, "invalid webhook url", http.StatusBadRequest)
-		return
+	if req.URL != nil {
+		trimmedURL := strings.TrimSpace(*req.URL)
+		if !validator.IsValidURL(trimmedURL) {
+			writeError(w, "invalid webhook url", http.StatusBadRequest)
+			return
+		}
+		req.URL = &trimmedURL
 	}
 	if req.Events != nil {
-		if len(*req.Events) == 0 {
+		if len(*req.Events) == 0 || len(*req.Events) > 50 {
 			writeError(w, "at least one webhook event is required", http.StatusBadRequest)
 			return
 		}

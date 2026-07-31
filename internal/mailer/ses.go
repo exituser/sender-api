@@ -2,14 +2,17 @@ package mailer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"mime"
 	"path/filepath"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2/types"
+	"github.com/aws/smithy-go"
 	"github.com/sender-api/sender-api/internal/domain"
 )
 
@@ -27,7 +30,7 @@ func NewSESMailer(client *sesv2.Client, configSet string, logger *slog.Logger) *
 	}
 }
 
-func (m *SESMailer) Send(ctx context.Context, email *domain.Email) error {
+func (m *SESMailer) Send(ctx context.Context, email *domain.Email) (string, error) {
 	input := &sesv2.SendEmailInput{
 		FromEmailAddress: aws.String(email.From),
 		Destination: &types.Destination{
@@ -93,13 +96,13 @@ func (m *SESMailer) Send(ctx context.Context, email *domain.Email) error {
 		}
 	}
 
-	_, err := m.client.SendEmail(ctx, input)
+	output, err := m.client.SendEmail(ctx, input)
 	if err != nil {
 		m.logger.Error("failed to send email via SES",
 			"email_id", email.ID,
 			"error", err,
 		)
-		return fmt.Errorf("ses send failed: %w", err)
+		return "", domain.NewDeliveryError(fmt.Errorf("ses send failed: %w", err), sesErrorRetryable(err))
 	}
 
 	m.logger.Info("email sent via SES",
@@ -107,5 +110,25 @@ func (m *SESMailer) Send(ctx context.Context, email *domain.Email) error {
 		"from", email.From,
 	)
 
-	return nil
+	if output.MessageId == nil || strings.TrimSpace(*output.MessageId) == "" {
+		return "", domain.NewDeliveryError(fmt.Errorf("ses send returned no message id"), false)
+	}
+	return *output.MessageId, nil
+}
+
+func sesErrorRetryable(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := strings.ToLower(apiErr.ErrorCode())
+		switch {
+		case strings.Contains(code, "throttl"), strings.Contains(code, "timeout"), strings.Contains(code, "unavailable"), strings.Contains(code, "internal"):
+			return true
+		case strings.Contains(code, "reject"), strings.Contains(code, "invalid"), strings.Contains(code, "notverified"), strings.Contains(code, "configuration"):
+			return false
+		}
+	}
+	return true
 }

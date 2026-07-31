@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,100 +13,180 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/sender-api/sender-api/internal/domain"
 	"github.com/sender-api/sender-api/pkg/validator"
-	"github.com/sender-api/sender-api/pkg/webhook"
 )
 
 var ErrEmailNotDue = errors.New("email is scheduled for a later time")
+
+type EmailNotDueError struct {
+	At time.Time
+}
+
+func (e *EmailNotDueError) Error() string {
+	return ErrEmailNotDue.Error()
+}
+
+func (e *EmailNotDueError) Unwrap() error {
+	return ErrEmailNotDue
+}
+
 var ErrEmailNotQueued = errors.New("email is no longer queued")
 var ErrEmailDeliveryFailed = errors.New("email delivery failed")
+var ErrEmailDeliveryRetryable = errors.New("email delivery should be retried")
 var ErrQueueUnavailable = errors.New("queue unavailable")
+var ErrIdempotencyConflict = errors.New("idempotency key was already used with a different request")
 
 type EmailService struct {
-	emailRepo   domain.EmailRepository
-	queue       domain.EmailQueue
-	sender      domain.EmailSender
-	webhookRepo domain.WebhookRepository
-	logger      *slog.Logger
+	emailRepo    domain.EmailRepository
+	domainRepo   domain.DomainRepository
+	queue        domain.EmailQueue
+	sender       domain.EmailSender
+	webhookRepo  domain.WebhookRepository
+	deliveryRepo domain.WebhookDeliveryRepository
+	logger       *slog.Logger
 }
 
 func NewEmailService(
 	emailRepo domain.EmailRepository,
+	domainRepo domain.DomainRepository,
 	queue domain.EmailQueue,
 	sender domain.EmailSender,
 	webhookRepo domain.WebhookRepository,
+	deliveryRepo domain.WebhookDeliveryRepository,
 	logger *slog.Logger,
 ) *EmailService {
 	return &EmailService{
-		emailRepo:   emailRepo,
-		queue:       queue,
-		sender:      sender,
-		webhookRepo: webhookRepo,
-		logger:      logger,
+		emailRepo:    emailRepo,
+		domainRepo:   domainRepo,
+		queue:        queue,
+		sender:       sender,
+		webhookRepo:  webhookRepo,
+		deliveryRepo: deliveryRepo,
+		logger:       logger,
 	}
 }
 
 func (s *EmailService) Send(ctx context.Context, teamID uuid.UUID, req *domain.SendEmailRequest) (*domain.EmailResponse, error) {
+	response, _, err := s.send(ctx, teamID, req, "")
+	return response, err
+}
+
+func (s *EmailService) SendWithIdempotency(ctx context.Context, teamID uuid.UUID, req *domain.SendEmailRequest, idempotencyKey string) (*domain.EmailResponse, bool, error) {
+	return s.send(ctx, teamID, req, strings.TrimSpace(idempotencyKey))
+}
+
+func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.SendEmailRequest, idempotencyKey string) (*domain.EmailResponse, bool, error) {
 	if req == nil {
-		return nil, fmt.Errorf("email request is required")
+		return nil, false, fmt.Errorf("email request is required")
 	}
 	if len(req.To) == 0 {
-		return nil, fmt.Errorf("at least one recipient is required")
+		return nil, false, fmt.Errorf("at least one recipient is required")
 	}
-	if len(req.To) > 50 {
-		return nil, fmt.Errorf("maximum 50 recipients allowed")
+	if len(req.To)+len(req.CC)+len(req.BCC) > 50 {
+		return nil, false, fmt.Errorf("maximum 50 recipients allowed")
 	}
 	if req.Subject == "" {
-		return nil, fmt.Errorf("subject is required")
+		return nil, false, fmt.Errorf("subject is required")
 	}
 	if len(req.Subject) > 998 {
-		return nil, fmt.Errorf("subject is too long")
+		return nil, false, fmt.Errorf("subject is too long")
 	}
 	if req.HTML == "" && req.Text == "" {
-		return nil, fmt.Errorf("html or text body is required")
+		return nil, false, fmt.Errorf("html or text body is required")
 	}
 	if req.From == "" {
-		return nil, fmt.Errorf("from address is required")
+		return nil, false, fmt.Errorf("from address is required")
 	}
 	if !validator.IsValidEmail(req.From) {
-		return nil, fmt.Errorf("invalid from address")
+		return nil, false, fmt.Errorf("invalid from address")
+	}
+	fromDomain := validator.EmailDomain(req.From)
+	if s.domainRepo == nil {
+		return nil, false, fmt.Errorf("sender domain authorization is not configured")
+	}
+	configuredDomain, err := s.domainRepo.GetByName(ctx, teamID, fromDomain)
+	if err != nil || configuredDomain == nil || configuredDomain.Status != domain.DomainStatusVerified {
+		return nil, false, fmt.Errorf("from domain is not verified for this team")
+	}
+	if idempotencyKey != "" {
+		if len(idempotencyKey) > 255 || strings.ContainsAny(idempotencyKey, "\r\n") {
+			return nil, false, fmt.Errorf("invalid idempotency key")
+		}
+		requestHash := hashSendRequest(req)
+		existing, lookupErr := s.emailRepo.GetByIdempotencyKey(ctx, teamID, idempotencyKey)
+		if lookupErr == nil && existing != nil {
+			if existing.IdempotencyHash == nil || *existing.IdempotencyHash != requestHash {
+				return nil, false, ErrIdempotencyConflict
+			}
+			return &domain.EmailResponse{ID: existing.ID.String(), Idempotent: true}, false, nil
+		}
+		if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+			return nil, false, fmt.Errorf("failed to check idempotency key: %w", lookupErr)
+		}
 	}
 	for _, address := range append(append(append([]string{}, req.To...), req.CC...), req.BCC...) {
 		if !validator.IsValidEmail(address) {
-			return nil, fmt.Errorf("invalid recipient address: %s", address)
+			return nil, false, fmt.Errorf("invalid recipient address: %s", address)
 		}
 	}
 	for _, address := range req.ReplyTo {
 		if !validator.IsValidEmail(address) {
-			return nil, fmt.Errorf("invalid reply-to address: %s", address)
+			return nil, false, fmt.Errorf("invalid reply-to address: %s", address)
 		}
 	}
 	for _, attachment := range req.Attachments {
 		if attachment.Filename == "" || filepath.Base(attachment.Filename) != attachment.Filename {
-			return nil, fmt.Errorf("invalid attachment filename")
+			return nil, false, fmt.Errorf("invalid attachment filename")
 		}
 	}
 	if len(req.Headers) > 50 {
-		return nil, fmt.Errorf("maximum 50 custom headers allowed")
+		return nil, false, fmt.Errorf("maximum 50 custom headers allowed")
+	}
+	if len(req.Attachments) > 10 {
+		return nil, false, fmt.Errorf("maximum 10 attachments allowed")
+	}
+	if len(req.Tags) > 50 {
+		return nil, false, fmt.Errorf("maximum 50 tags allowed")
+	}
+	if len(req.Metadata) > 50 {
+		return nil, false, fmt.Errorf("maximum 50 metadata fields allowed")
+	}
+	for _, tag := range req.Tags {
+		if strings.TrimSpace(tag.Name) == "" || len(tag.Name) > 100 || len(tag.Value) > 500 ||
+			strings.ContainsAny(tag.Name, "\r\n") || strings.ContainsAny(tag.Value, "\r\n") {
+			return nil, false, fmt.Errorf("invalid email tag")
+		}
+	}
+	for key, value := range req.Metadata {
+		if strings.TrimSpace(key) == "" || len(key) > 100 || len(value) > 1000 ||
+			strings.ContainsAny(key, "\r\n") || strings.ContainsAny(value, "\r\n") {
+			return nil, false, fmt.Errorf("invalid email metadata")
+		}
 	}
 	for name, value := range req.Headers {
 		lowerName := strings.ToLower(strings.TrimSpace(name))
 		if name == "" || len(name) > 100 || strings.TrimSpace(name) != name ||
 			strings.ContainsAny(name, "\r\n:") || strings.ContainsAny(value, "\r\n") || len(value) > 2000 {
-			return nil, fmt.Errorf("invalid custom header")
+			return nil, false, fmt.Errorf("invalid custom header")
 		}
 		switch lowerName {
 		case "from", "to", "cc", "bcc", "subject", "reply-to", "content-type", "mime-version":
-			return nil, fmt.Errorf("reserved custom header: %s", name)
+			return nil, false, fmt.Errorf("reserved custom header: %s", name)
 		}
 	}
 	totalSize := len(req.HTML) + len(req.Text)
 	for _, attachment := range req.Attachments {
 		totalSize += len(attachment.Content)
 	}
-	if totalSize > 9*1024*1024 {
-		return nil, fmt.Errorf("email payload is too large")
+	if totalSize > 7*1024*1024 {
+		return nil, false, fmt.Errorf("email payload is too large")
+	}
+	var idempotencyHash *string
+	if idempotencyKey != "" {
+		hash := hashSendRequest(req)
+		idempotencyHash = &hash
 	}
 
 	email := &domain.Email{
@@ -123,24 +205,52 @@ func (s *EmailService) Send(ctx context.Context, teamID uuid.UUID, req *domain.S
 		Tags:        req.Tags,
 		Metadata:    req.Metadata,
 		Headers:     req.Headers,
-		ScheduledAt: req.ScheduledAt,
+		IdempotencyKey: func() *string {
+			if idempotencyKey == "" {
+				return nil
+			}
+			key := idempotencyKey
+			return &key
+		}(),
+		IdempotencyHash: idempotencyHash,
+		ScheduledAt:     req.ScheduledAt,
 	}
 
 	if err := s.emailRepo.Create(ctx, email); err != nil {
-		return nil, fmt.Errorf("failed to save email: %w", err)
+		if idempotencyKey != "" {
+			if existing, lookupErr := s.emailRepo.GetByIdempotencyKey(ctx, teamID, idempotencyKey); lookupErr == nil && existing != nil {
+				if existing.IdempotencyHash == nil || *existing.IdempotencyHash != *idempotencyHash {
+					return nil, false, ErrIdempotencyConflict
+				}
+				return &domain.EmailResponse{ID: existing.ID.String(), Idempotent: true}, false, nil
+			}
+		}
+		return nil, false, fmt.Errorf("failed to save email: %w", err)
 	}
 
-	if err := s.queue.Enqueue(ctx, email.ID.String()); err != nil {
+	var queueErr error
+	if email.ScheduledAt != nil && email.ScheduledAt.After(time.Now()) {
+		queueErr = s.queue.Schedule(ctx, email.ID.String(), *email.ScheduledAt)
+	} else {
+		queueErr = s.queue.Enqueue(ctx, email.ID.String())
+	}
+	if queueErr != nil {
 		if statusErr := s.emailRepo.UpdateStatus(ctx, email.ID, domain.EmailStatusFailed); statusErr != nil {
 			s.logger.Error("failed to mark email failed after enqueue error", "email_id", email.ID, "error", statusErr)
 		}
 		s.recordEvent(ctx, email.ID, "email.failed", map[string]string{"reason": "queue_unavailable"})
-		return nil, fmt.Errorf("%w: %v", ErrQueueUnavailable, err)
+		return nil, false, fmt.Errorf("%w: %v", ErrQueueUnavailable, queueErr)
 	}
 
 	s.logger.Info("email queued", "email_id", email.ID)
 
-	return &domain.EmailResponse{ID: email.ID.String()}, nil
+	return &domain.EmailResponse{ID: email.ID.String()}, true, nil
+}
+
+func hashSendRequest(req *domain.SendEmailRequest) string {
+	payload, _ := json.Marshal(req)
+	hash := sha256.Sum256(payload)
+	return hex.EncodeToString(hash[:])
 }
 
 func (s *EmailService) GetByID(ctx context.Context, teamID, id uuid.UUID) (*domain.Email, error) {
@@ -154,10 +264,16 @@ func (s *EmailService) List(ctx context.Context, teamID uuid.UUID, limit, offset
 	if limit > 100 {
 		limit = 100
 	}
+	if offset < 0 {
+		offset = 0
+	}
 	return s.emailRepo.List(ctx, teamID, limit, offset)
 }
 
 func (s *EmailService) GetEvents(ctx context.Context, teamID, emailID uuid.UUID) ([]domain.EmailEvent, error) {
+	if _, err := s.emailRepo.GetByIDForTeam(ctx, teamID, emailID); err != nil {
+		return nil, err
+	}
 	return s.emailRepo.GetEventsForTeam(ctx, teamID, emailID)
 }
 
@@ -169,7 +285,14 @@ func (s *EmailService) Cancel(ctx context.Context, teamID, id uuid.UUID) error {
 	if email.Status != domain.EmailStatusQueued {
 		return fmt.Errorf("only queued emails can be cancelled")
 	}
-	return s.emailRepo.UpdateStatusForTeam(ctx, teamID, id, domain.EmailStatusCancelled)
+	cancelled, err := s.emailRepo.CancelQueued(ctx, teamID, id)
+	if err != nil {
+		return fmt.Errorf("failed to cancel email: %w", err)
+	}
+	if !cancelled {
+		return fmt.Errorf("email is no longer queued")
+	}
+	return nil
 }
 
 func (s *EmailService) ProcessFromQueue(ctx context.Context, emailID string) error {
@@ -187,33 +310,73 @@ func (s *EmailService) ProcessFromQueue(ctx context.Context, emailID string) err
 		return fmt.Errorf("%w: %s", ErrEmailNotQueued, email.Status)
 	}
 	if email.ScheduledAt != nil && time.Now().Before(*email.ScheduledAt) {
-		return ErrEmailNotDue
+		return &EmailNotDueError{At: *email.ScheduledAt}
 	}
 
-	if err := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusSending); err != nil {
+	claimed, err := s.emailRepo.ClaimForSending(ctx, id)
+	if err != nil {
 		return fmt.Errorf("failed to mark email sending: %w", err)
+	}
+	if !claimed {
+		return fmt.Errorf("%w: email was claimed or cancelled by another worker", ErrEmailNotQueued)
 	}
 	s.recordEvent(ctx, id, "email.sending", nil)
 
-	if err := s.sender.Send(ctx, email); err != nil {
+	sendCtx, cancelSend := context.WithTimeout(ctx, 30*time.Second)
+	providerMessageID, err := s.sender.Send(sendCtx, email)
+	cancelSend()
+	if err != nil {
+		if domain.IsRetryableDeliveryError(err) {
+			if statusErr := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusQueued); statusErr != nil {
+				return fmt.Errorf("retryable send failed: %w; failed to restore queued status: %v", err, statusErr)
+			}
+			s.recordEvent(ctx, id, "email.retrying", map[string]string{"reason": err.Error()})
+			return fmt.Errorf("%w: %v", ErrEmailDeliveryRetryable, err)
+		}
 		if statusErr := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusFailed); statusErr != nil {
 			return fmt.Errorf("send failed: %w; failed to mark email failed: %v", err, statusErr)
 		}
-		s.recordEvent(ctx, id, "email.failed", map[string]string{"reason": err.Error()})
-		s.dispatchWebhooks(ctx, email.TeamID, "email.failed", email)
+		eventID := s.recordEvent(ctx, id, "email.failed", map[string]string{"reason": err.Error()})
+		s.dispatchWebhooks(ctx, email.TeamID, eventID, "email.failed", email)
 		return fmt.Errorf("%w: %v", ErrEmailDeliveryFailed, err)
+	}
+	if strings.TrimSpace(providerMessageID) != "" {
+		providerMessageID = strings.TrimSpace(providerMessageID)
+		email.ProviderMessageID = &providerMessageID
+		if err := s.emailRepo.SetProviderMessageID(ctx, id, providerMessageID); err != nil {
+			// SES has already accepted the message. Retrying here could send a duplicate,
+			// so keep the send successful and let observability surface the persistence gap.
+			s.logger.Error("failed to persist provider message id", "email_id", id, "error", err)
+		}
 	}
 
 	if err := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusSent); err != nil {
 		return fmt.Errorf("failed to mark email sent: %w", err)
 	}
-	s.recordEvent(ctx, id, "email.sent", nil)
-	s.dispatchWebhooks(ctx, email.TeamID, "email.sent", email)
+	eventID := s.recordEvent(ctx, id, "email.sent", nil)
+	s.dispatchWebhooks(ctx, email.TeamID, eventID, "email.sent", email)
 
 	return nil
 }
 
-func (s *EmailService) recordEvent(ctx context.Context, emailID uuid.UUID, eventName string, data any) {
+func (s *EmailService) MarkFailedFromQueue(ctx context.Context, emailID, reason string) error {
+	id, err := uuid.Parse(emailID)
+	if err != nil {
+		return err
+	}
+	if err := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusFailed); err != nil {
+		return err
+	}
+	s.recordEvent(ctx, id, "email.failed", map[string]string{"reason": reason})
+	return nil
+}
+
+func (s *EmailService) RecoverSending(ctx context.Context) error {
+	return s.emailRepo.ResetSendingToQueued(ctx)
+}
+
+func (s *EmailService) recordEvent(ctx context.Context, emailID uuid.UUID, eventName string, data any) uuid.UUID {
+	eventID := uuid.New()
 	dataJSON := []byte("null")
 	if data != nil {
 		if encoded, err := json.Marshal(data); err == nil {
@@ -221,7 +384,7 @@ func (s *EmailService) recordEvent(ctx context.Context, emailID uuid.UUID, event
 		}
 	}
 	if err := s.emailRepo.AddEvent(ctx, &domain.EmailEvent{
-		ID:        uuid.New(),
+		ID:        eventID,
 		EmailID:   emailID,
 		Event:     eventName,
 		Timestamp: time.Now().UTC(),
@@ -229,30 +392,35 @@ func (s *EmailService) recordEvent(ctx context.Context, emailID uuid.UUID, event
 	}); err != nil {
 		s.logger.Error("failed to record email event", "email_id", emailID, "event", eventName, "error", err)
 	}
+	return eventID
 }
 
-func (s *EmailService) dispatchWebhooks(ctx context.Context, teamID uuid.UUID, event string, payload any) {
+func (s *EmailService) dispatchWebhooks(ctx context.Context, teamID, eventID uuid.UUID, event string, payload any) {
+	if s.deliveryRepo == nil {
+		s.logger.Error("webhook delivery repository is not configured", "event", event)
+		return
+	}
 	webhooks, err := s.webhookRepo.GetByEvent(ctx, teamID, event)
 	if err != nil {
 		s.logger.Error("failed to get webhooks", "error", err)
 		return
 	}
 
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		s.logger.Error("failed to marshal webhook payload", "event", event, "error", err)
+		return
+	}
 	for _, wh := range webhooks {
-		go func(wh domain.Webhook) {
-			if err := webhook.SendWebhook(wh.URL, wh.Secret, event, payload); err != nil {
-				s.logger.Error("webhook delivery failed",
-					"webhook_id", wh.ID,
-					"event", event,
-					"error", err,
-				)
-			} else {
-				s.logger.Info("webhook delivered",
-					"webhook_id", wh.ID,
-					"event", event,
-				)
-			}
-		}(wh)
+		if err := s.deliveryRepo.CreateDelivery(ctx, &domain.WebhookDelivery{
+			ID:        uuid.New(),
+			WebhookID: wh.ID,
+			EventID:   eventID,
+			Event:     event,
+			Payload:   payloadJSON,
+		}); err != nil {
+			s.logger.Error("failed to enqueue webhook delivery", "webhook_id", wh.ID, "event", event, "error", err)
+		}
 	}
 }
 

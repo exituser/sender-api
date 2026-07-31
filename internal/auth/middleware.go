@@ -183,37 +183,33 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if strings.HasPrefix(token, "ey") {
-			supClaims, err := VerifySupabaseJWT(token)
-			if err != nil {
-				writeJSONError(w, "invalid jwt", http.StatusUnauthorized)
-				return
-			}
-			claims := &Claims{
-				UserID: supClaims.Sub,
-				Role:   "user",
-			}
-			requestedTeamID := r.Header.Get("X-Team-ID")
-			if requestedTeamID != "" {
-				if resolveUserTeamFunc == nil {
-					writeJSONError(w, "team resolver is not configured", http.StatusServiceUnavailable)
-					return
-				}
-				team, err := resolveUserTeamFunc(r.Context(), supClaims.Sub, requestedTeamID)
-				if err != nil {
-					writeJSONError(w, "team access denied", http.StatusForbidden)
-					return
-				}
-				claims.TeamID = team.TeamID
-				claims.Role = team.Role
-				claims.Plan = team.Plan
-			}
-			ctx := context.WithValue(r.Context(), ClaimsKey, claims)
-			next.ServeHTTP(w, r.WithContext(ctx))
+		supClaims, err := VerifySupabaseJWT(token)
+		if err != nil {
+			writeJSONError(w, "invalid jwt", http.StatusUnauthorized)
 			return
 		}
-
-		writeJSONError(w, "invalid token format", http.StatusUnauthorized)
+		claims := &Claims{
+			UserID: supClaims.Sub,
+			Role:   "user",
+		}
+		requestedTeamID := r.Header.Get("X-Team-ID")
+		if requestedTeamID != "" {
+			if resolveUserTeamFunc == nil {
+				writeJSONError(w, "team resolver is not configured", http.StatusServiceUnavailable)
+				return
+			}
+			team, err := resolveUserTeamFunc(r.Context(), supClaims.Sub, requestedTeamID)
+			if err != nil {
+				writeJSONError(w, "team access denied", http.StatusForbidden)
+				return
+			}
+			claims.TeamID = team.TeamID
+			claims.Role = team.Role
+			claims.Plan = team.Plan
+		}
+		ctx := context.WithValue(r.Context(), ClaimsKey, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+		return
 	})
 }
 

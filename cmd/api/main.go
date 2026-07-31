@@ -26,6 +26,7 @@ import (
 	"github.com/sender-api/sender-api/internal/queue"
 	"github.com/sender-api/sender-api/internal/repository"
 	"github.com/sender-api/sender-api/internal/service"
+	"github.com/sender-api/sender-api/pkg/metrics"
 	pkgmiddleware "github.com/sender-api/sender-api/pkg/middleware"
 )
 
@@ -35,6 +36,10 @@ func main() {
 	}))
 
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 
 	if cfg.SentryDSN != "" {
 		if err := sentry.Init(sentry.ClientOptions{
@@ -54,8 +59,13 @@ func main() {
 		"port", cfg.Port,
 	)
 
+	jwtReady := true
 	if err := auth.InitJWT(cfg.SupabaseURL); err != nil {
+		jwtReady = false
 		logger.Warn("failed to init JWT (continuing without JWT auth)", "error", err)
+		if cfg.IsProduction() {
+			os.Exit(1)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -67,6 +77,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer dbPool.Close()
+	if err := dbPool.Ping(ctx); err != nil {
+		logger.Error("failed to ping database", "error", err)
+		os.Exit(1)
+	}
 
 	logger.Info("connected to database")
 
@@ -75,15 +89,21 @@ func main() {
 	})
 	defer redisClient.Close()
 
+	redisReady := true
 	if err := redisClient.Ping(ctx).Err(); err != nil {
+		redisReady = false
 		logger.Warn("failed to connect to redis (continuing without queue)", "error", err)
 	}
 
 	awsCfg, err := awscfg.LoadDefaultConfig(ctx,
 		awscfg.WithRegion(cfg.AWSRegion),
 	)
+	awsReady := err == nil
 	if err != nil {
 		logger.Warn("failed to load aws config", "error", err)
+		if cfg.IsProduction() {
+			os.Exit(1)
+		}
 	}
 
 	sesClient := sesv2.NewFromConfig(awsCfg)
@@ -95,6 +115,7 @@ func main() {
 	apiKeyRepo := repository.NewAPIKeyRepo(dbPool)
 	inboundRepo := repository.NewInboundEmailRepo(dbPool)
 	webhookRepo := repository.NewWebhookRepo(dbPool)
+	webhookDeliveryRepo := repository.NewWebhookDeliveryRepo(dbPool)
 
 	auth.SetVerifyAPIKeyContextFunc(func(ctx context.Context, rawKey string) (*auth.APIKeyContext, error) {
 		verification, err := apiKeyRepo.VerifyAPIKey(ctx, rawKey)
@@ -142,11 +163,11 @@ func main() {
 
 	sesMailer := mailer.NewSESMailer(sesClient, cfg.AWSESConfigSet, logger)
 
-	emailService := service.NewEmailService(emailRepo, redisQueue, sesMailer, webhookRepo, logger)
+	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger)
 	teamService := service.NewTeamService(teamRepo, logger)
 	contactService := service.NewContactService(contactRepo, logger)
 	domainService := service.NewDomainService(domainRepo, logger)
-	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, logger)
+	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
 
 	emailHandler := handler.NewEmailHandler(emailService)
 	teamHandler := handler.NewTeamHandler(teamService)
@@ -154,7 +175,8 @@ func main() {
 	domainHandler := handler.NewDomainHandler(domainService)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyRepo)
 	webhookHandler := handler.NewWebhookHandler(webhookRepo)
-	inboundHandler := handler.NewInboundHandler(inboundService)
+	inboundHandler := handler.NewInboundHandler(inboundService, cfg.InboundWebhookToken, cfg.AWSRegion, cfg.InboundSNSTopicArn)
+	sesEventHandler := handler.NewSESEventHandler(emailService, cfg.AWSRegion, cfg.OutboundSESTopicArn)
 
 	r := chi.NewRouter()
 
@@ -164,11 +186,48 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 	r.Use(pkgmiddleware.CORS(cfg.CORSOrigins))
+	r.Use(pkgmiddleware.MaxBodyBytes(10 << 20))
+	r.Use(metrics.HTTP)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		readyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		ready := redisReady && (jwtReady || !cfg.IsProduction()) && awsReady
+		if ready && dbPool.Ping(readyCtx) != nil {
+			ready = false
+		}
+		if ready && redisClient.Ping(readyCtx).Err() != nil {
+			ready = false
+		}
+		if !ready {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"status":"not_ready"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ready"}`))
+	})
+	r.Get("/metrics", metrics.Handler)
+
+	// Provider callbacks must be registered before authenticated resource mounts
+	// that share the /webhooks and /inbound prefixes.
+	r.With(
+		pkgmiddleware.RateLimit(redisClient),
+	).Post(
+		"/api/v1/inbound/ses",
+		inboundHandler.HandleSESPayload,
+	)
+	r.With(
+		pkgmiddleware.RateLimit(redisClient),
+	).Post(
+		"/api/v1/webhooks/ses",
+		sesEventHandler.Handle,
+	)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(auth.AuthMiddleware)
@@ -183,21 +242,15 @@ func main() {
 		r.Mount("/inbound", inboundHandler.Routes())
 	})
 
-	r.With(
-		pkgmiddleware.InboundToken(cfg.InboundWebhookToken),
-		pkgmiddleware.RateLimit(redisClient),
-	).Post(
-		"/api/v1/inbound/ses",
-		inboundHandler.HandleSESPayload,
-	)
-
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              addr,
+		Handler:           r,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {
