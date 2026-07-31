@@ -1,4 +1,4 @@
-.PHONY: build run worker dev dev-down test clean migrate-up migrate-down lint tidy
+.PHONY: build run worker dev dev-down test clean migrate-up migrate-down lint tidy backup restore
 
 build:
 	go build -o bin/api ./cmd/api
@@ -34,3 +34,9 @@ lint:
 
 tidy:
 	go mod tidy
+
+backup:
+	./scripts/backup-db.sh
+
+restore:
+	./scripts/restore-db.sh "$(BACKUP_FILE)"

@@ -46,3 +46,6 @@ build/
 
 # Docker
 docker-compose.override.yml
+
+# Local database backups
+backups/

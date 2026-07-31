@@ -1,21 +1,22 @@
 ## Summary
 
-<!-- What changed and why? Keep the scope focused. -->
+<!-- What changed and why? -->
 
-## Validation
+## Verification
 
+- [ ] Focused tests added or updated
 - [ ] `go test ./cmd/... ./internal/... ./pkg/...`
 - [ ] `go vet ./cmd/... ./internal/... ./pkg/...`
 - [ ] `go build ./cmd/...`
-- [ ] Frontend lint, typecheck, build, and production dependency audit (when `web/` changes)
-- [ ] Compose configuration validation (when Docker or environment wiring changes)
+- [ ] Frontend checks run when `web/` changed
+- [ ] Compose/migration checks run when Docker or SQL changed
 
-## Safety checklist
+## Risk and rollout
 
-- [ ] No credentials, tokens, private data, or generated build artifacts are included.
-- [ ] Tenant boundaries and authorization behavior were reviewed.
-- [ ] Migrations are backward-aware and documented when needed.
-- [ ] Remaining risks or follow-up work are described below.
+- [ ] No secrets or production data included
+- [ ] Tenant isolation and auth boundaries reviewed
+- [ ] Migration/rollback and operational impact documented
+- [ ] Remaining external or production-only blockers listed
 
 ## Notes
 

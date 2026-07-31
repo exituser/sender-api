@@ -1,27 +1,23 @@
 name: Bug report
-description: Report a reproducible defect in Sender API.
+description: Report a reproducible problem safely
 title: "bug: "
+labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: |
-        Do not include credentials, tokens, private email addresses, or production data.
-        Security vulnerabilities belong in the private process described in SECURITY.md.
-
-  - type: input
+      value: Remove credentials, tokens, personal data, and production payloads before submitting.
+  - type: textarea
     id: summary
     attributes:
-      label: Summary
-      description: What went wrong?
-      placeholder: Short description of the defect
+      label: What happened?
+      description: Describe the observed behavior and the expected behavior.
     validations:
       required: true
-
   - type: textarea
-    id: reproduction
+    id: reproduce
     attributes:
-      label: Reproduction steps
-      description: Provide the smallest safe reproduction.
+      label: Reproduction
+      description: Provide the smallest safe request, logs, or steps to reproduce.
       placeholder: |
         1. Configure ...
         2. Run ...
@@ -55,3 +51,9 @@ body:
     attributes:
       label: Relevant logs
       render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true

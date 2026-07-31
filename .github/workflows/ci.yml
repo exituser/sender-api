@@ -83,7 +83,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Validate production Compose configuration
-        run: docker compose config --quiet
+        run: cp .env.example .env && docker compose config --quiet
 
       - name: Validate development Compose configuration
         run: docker compose -f docker-compose.dev.yml config --quiet
@@ -104,6 +104,6 @@ jobs:
           docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM webhook_deliveries LIMIT 1"
           docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM pg_indexes WHERE indexname = 'ux_emails_team_idempotency_key'"
           docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM information_schema.columns WHERE table_name = 'emails' AND column_name = 'sending_at'"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 4 AS version, false AS dirty FROM public.schema_migrations WHERE version = 4 AND dirty = false"
+          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 5 AS version, false AS dirty FROM public.schema_migrations WHERE version = 5 AND dirty = false"
           docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM information_schema.columns WHERE table_name = 'domains' AND column_name = 'mx_status'"
           docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "INSERT INTO teams (id, name, slug) VALUES ('00000000-0000-0000-0000-000000000001', 'migration-check', 'migration-check'); DELETE FROM teams WHERE id = '00000000-0000-0000-0000-000000000001'"

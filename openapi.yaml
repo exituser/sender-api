@@ -27,6 +27,8 @@ paths:
         '201': { $ref: '#/components/responses/EmailCreated' }
         '200': { $ref: '#/components/responses/EmailCreated' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /emails/batch:
     post:
       summary: Queue multiple emails
@@ -41,6 +43,8 @@ paths:
               items: { $ref: '#/components/schemas/SendEmailRequest' }
       responses:
         '201': { $ref: '#/components/responses/JSON' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /emails/{id}:
     parameters:
       - $ref: '#/components/parameters/ID'
@@ -167,6 +171,8 @@ components:
     EmailList: { description: Email list, content: { application/json: { schema: { type: object } } } }
     EmailCreated: { description: Queued email, content: { application/json: { schema: { $ref: '#/components/schemas/EmailResponse' } } } }
     Conflict: { description: Idempotency conflict, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    RateLimited: { description: Daily recipient or request rate limit exceeded, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unavailable: { description: Queue or usage limiter unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
     SendEmailRequest:
       type: object

@@ -1,6 +1,7 @@
 name: Feature request
-description: Suggest an improvement to Sender API.
+description: Suggest a focused improvement
 title: "feat: "
+labels: [enhancement]
 body:
   - type: textarea
     id: problem
@@ -9,12 +10,11 @@ body:
       description: What user or operational problem should this solve?
     validations:
       required: true
-
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed behavior
-      description: Describe the smallest useful solution.
+      label: Proposal
+      description: Describe the desired behavior and important constraints.
     validations:
       required: true
 

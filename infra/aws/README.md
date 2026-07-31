@@ -63,6 +63,12 @@ The application verifies the SNS signature and exact topic ARN. The worker
 long-polls SQS and deletes a message only after the database write succeeds;
 failed messages are retried and eventually moved to the DLQ.
 
+Before a mail-flow rollout, run the read-only
+`scripts/verify-aws-inbound.sh` check with `AWS_REGION`, `INBOUND_DOMAIN`,
+`INBOUND_BUCKET`, and `INBOUND_TOPIC_ARN`. It confirms that the active SES
+receipt rule set, recipient domain, S3 bucket, and SNS topic agree. The check
+requires AWS CLI, `jq`, and the deployment account credentials.
+
 ## Create and activate the SES receipt rule
 
 Use the already verified domain, or pass a specific verified domain after

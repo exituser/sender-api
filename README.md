@@ -54,7 +54,8 @@ docker build -f docker/Dockerfile.worker -t sender-worker .
 Base URL: `http://localhost:8080/api/v1`
 
 Machine-readable contract: [`openapi.yaml`](openapi.yaml). Runtime probes are
-available at `/health`, `/readyz`, and `/metrics`.
+available at `/health`, `/readyz`, and `/metrics`. Set `METRICS_TOKEN` outside
+local development; protected metrics require the `X-Metrics-Token` header.
 
 ### Authentication
 
@@ -72,7 +73,9 @@ or `*`). Requests without a verified team context are rejected.
 `POST /emails` accepts an optional `Idempotency-Key` header. Reusing a key with
 different request data returns `409`; reusing it with the same data returns the
 original email ID without queuing a second message. The `From` domain must be
-verified and owned by the active team.
+verified and owned by the active team. Each team also has a configurable
+`DAILY_RECIPIENT_LIMIT`; exhausted quotas return `429` and queue/database
+failures release the reservation.
 
 ### Emails
 
@@ -167,11 +170,19 @@ event callback is not registered. When it is set, the exact topic ARN is still
 checked, so disabling the integration does not weaken verification for enabled
 callbacks.
 
+In production, user webhooks must use HTTPS. HTTP webhook URLs remain available
+only for local development, and private/link-local targets are rejected in all
+environments.
+
+The web app includes Supabase password recovery at `/forgot-password`. Add the
+public `/callback` and `/reset-password` URLs to the Supabase redirect allowlist
+before enabling recovery for users.
+
 ### Low-volume profile
 
-For a small outbound workload, keep only SES, the application host, and the
-database/authentication service enabled. The values below reduce idle resource
-usage without changing delivery retries or email validation:
+For local or low-volume outbound-only workloads, keep only SES, the application
+host, and the database/authentication service enabled. The values below reduce
+idle resource usage without changing delivery retries or email validation:
 
 ```dotenv
 AWS_SES_CONFIGSET=
@@ -209,7 +220,9 @@ The first migration creates a fresh database schema. `002_delivery` is kept as
 a compatibility migration, `003_hardening` adds tenant ownership,
 idempotency, indexes, inbound deduplication, sending recovery timestamps, and
 durable webhook deliveries, and `004_inbound_mx` adds the SES inbound MX
-verification state.
+verification state. `005_public_access_hardening` removes application-table
+privileges from Supabase's `anon` and `authenticated` roles because the Go API
+is the public data boundary.
 Apply all migrations with:
 
 ```bash
@@ -217,13 +230,17 @@ DATABASE_URL=postgresql://supabase_admin:postgres@localhost:5432/sender_api make
 ```
 
 The Compose database is initialized from `migrations/001_initial.up.sql`,
-`migrations/003_hardening.up.sql`, and `migrations/004_inbound_mx.up.sql`; its
-`schema_migrations` marker is set to version 4. Use the migration command for
+`migrations/003_hardening.up.sql`, `migrations/004_inbound_mx.up.sql`, and
+`migrations/005_public_access_hardening.up.sql`; its `schema_migrations` marker
+is set to version 5. Use the migration command for
 an already-existing database. Compose initialization only runs for a new
 database volume. Existing installations with
 duplicate normalized domains or nullable tenant IDs must be reviewed before
 applying `003_hardening`; the migration fails rather than silently rewriting
 them.
+
+For a release gate and backup/restore procedure, see
+[`docs/production-readiness.md`](docs/production-readiness.md).
 
 ## Quality checks
 
