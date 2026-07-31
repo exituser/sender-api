@@ -16,13 +16,15 @@ type WebhookWorker struct {
 	repo         domain.WebhookDeliveryRepository
 	logger       *slog.Logger
 	pollInterval time.Duration
+	requireHTTPS bool
 }
 
-func NewWebhookWorker(repo domain.WebhookDeliveryRepository, logger *slog.Logger, pollInterval time.Duration) *WebhookWorker {
+func NewWebhookWorker(repo domain.WebhookDeliveryRepository, logger *slog.Logger, pollInterval time.Duration, requireHTTPS ...bool) *WebhookWorker {
 	if pollInterval <= 0 {
 		pollInterval = time.Second
 	}
-	return &WebhookWorker{repo: repo, logger: logger, pollInterval: pollInterval}
+	production := len(requireHTTPS) > 0 && requireHTTPS[0]
+	return &WebhookWorker{repo: repo, logger: logger, pollInterval: pollInterval, requireHTTPS: production}
 }
 
 func (w *WebhookWorker) Start(ctx context.Context) {
@@ -57,7 +59,7 @@ func (w *WebhookWorker) Start(ctx context.Context) {
 		}
 
 		deliveryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err = webhook.SendWebhookWithID(deliveryCtx, delivery.ID, delivery.URL, delivery.Secret, delivery.Event, delivery.Payload)
+		err = webhook.SendWebhookWithIDPolicy(deliveryCtx, delivery.ID, delivery.URL, delivery.Secret, delivery.Event, delivery.Payload, w.requireHTTPS)
 		cancel()
 		if err == nil {
 			if markErr := w.repo.MarkDelivered(ctx, delivery.ID); markErr != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -25,11 +26,13 @@ type WebhookRepository interface {
 }
 
 type WebhookHandler struct {
-	webhookRepo WebhookRepository
+	webhookRepo  WebhookRepository
+	requireHTTPS bool
 }
 
-func NewWebhookHandler(webhookRepo WebhookRepository) *WebhookHandler {
-	return &WebhookHandler{webhookRepo: webhookRepo}
+func NewWebhookHandler(webhookRepo WebhookRepository, requireHTTPS ...bool) *WebhookHandler {
+	production := len(requireHTTPS) > 0 && requireHTTPS[0]
+	return &WebhookHandler{webhookRepo: webhookRepo, requireHTTPS: production}
 }
 
 func (h *WebhookHandler) Routes() chi.Router {
@@ -53,7 +56,7 @@ func (h *WebhookHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.URL = strings.TrimSpace(req.URL)
-	if !validator.IsValidURL(req.URL) || len(req.Events) == 0 || len(req.Events) > 50 {
+	if !h.validWebhookURL(req.URL) || len(req.Events) == 0 || len(req.Events) > 50 {
 		writeError(w, "valid url and at least one event are required", http.StatusBadRequest)
 		return
 	}
@@ -169,7 +172,7 @@ func (h *WebhookHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.URL != nil {
 		trimmedURL := strings.TrimSpace(*req.URL)
-		if !validator.IsValidURL(trimmedURL) {
+		if !h.validWebhookURL(trimmedURL) {
 			writeError(w, "invalid webhook url", http.StatusBadRequest)
 			return
 		}
@@ -204,6 +207,17 @@ func (h *WebhookHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, webhook, http.StatusOK)
+}
+
+func (h *WebhookHandler) validWebhookURL(rawURL string) bool {
+	if !validator.IsValidURL(rawURL) {
+		return false
+	}
+	if !h.requireHTTPS {
+		return true
+	}
+	parsed, err := url.Parse(rawURL)
+	return err == nil && strings.EqualFold(parsed.Scheme, "https")
 }
 
 func (h *WebhookHandler) Delete(w http.ResponseWriter, r *http.Request) {

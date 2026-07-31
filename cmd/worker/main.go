@@ -92,7 +92,7 @@ func main() {
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
 
 	emailWorker := worker.NewEmailWorker(emailService, redisQueue, logger, cfg.WorkerPollInterval)
-	webhookWorker := worker.NewWebhookWorker(webhookDeliveryRepo, logger, cfg.WorkerPollInterval)
+	webhookWorker := worker.NewWebhookWorker(webhookDeliveryRepo, logger, cfg.WorkerPollInterval, cfg.IsProduction())
 
 	var workers sync.WaitGroup
 	startWorker := func(run func(context.Context)) {

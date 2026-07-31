@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.api
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${API_HOST_PORT:-8080}:8080"
     environment:
       PORT: ${PORT:-8080}
       ENV: ${ENV:-development}
@@ -24,6 +24,8 @@ services:
       SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      DAILY_RECIPIENT_LIMIT: ${DAILY_RECIPIENT_LIMIT:-1000}
       INBOUND_S3_BUCKET: ${INBOUND_S3_BUCKET:-sender-api-inbound}
       INBOUND_SQS_QUEUE_URL: ${INBOUND_SQS_QUEUE_URL:-}
       INBOUND_SNS_TOPIC_ARN: ${INBOUND_SNS_TOPIC_ARN:-}
@@ -104,13 +106,13 @@ services:
       context: web
       dockerfile: ../docker/Dockerfile.web
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8080
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://localhost:54321}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
     ports:
-      - "${WEB_HOST_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_HOST_PORT:-3000}:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8080
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
       NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://localhost:54321}
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
     depends_on:
@@ -141,14 +143,15 @@ services:
       - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-supabase_admin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: sender_api
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/001_initial.up.sql:/docker-entrypoint-initdb.d/01_init.sql
       - ./migrations/003_hardening.up.sql:/docker-entrypoint-initdb.d/03_hardening.sql
       - ./migrations/004_inbound_mx.up.sql:/docker-entrypoint-initdb.d/04_inbound_mx.sql
-      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/05_compose_version.sql
+      - ./migrations/005_public_access_hardening.up.sql:/docker-entrypoint-initdb.d/05_public_access_hardening.sql
+      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/06_compose_version.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-supabase_admin} -d $${POSTGRES_DB:-sender_api}"]
       interval: 5s
@@ -161,6 +164,7 @@ services:
     image: redis:7-alpine
     ports:
       - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
     volumes:
       - redis_data:/data
     healthcheck:

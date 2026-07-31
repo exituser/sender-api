@@ -37,6 +37,8 @@ var ErrEmailDeliveryFailed = errors.New("email delivery failed")
 var ErrEmailDeliveryRetryable = errors.New("email delivery should be retried")
 var ErrQueueUnavailable = errors.New("queue unavailable")
 var ErrIdempotencyConflict = errors.New("idempotency key was already used with a different request")
+var ErrDailyRecipientLimit = errors.New("daily recipient limit exceeded")
+var ErrUsageUnavailable = errors.New("usage limiter unavailable")
 
 type EmailService struct {
 	emailRepo    domain.EmailRepository
@@ -46,6 +48,13 @@ type EmailService struct {
 	webhookRepo  domain.WebhookRepository
 	deliveryRepo domain.WebhookDeliveryRepository
 	logger       *slog.Logger
+	usageLimiter domain.UsageLimiter
+	dailyLimit   int
+}
+
+func (s *EmailService) SetUsageLimiter(limiter domain.UsageLimiter, dailyLimit int) {
+	s.usageLimiter = limiter
+	s.dailyLimit = dailyLimit
 }
 
 func NewEmailService(
@@ -183,6 +192,28 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 	if totalSize > 7*1024*1024 {
 		return nil, false, fmt.Errorf("email payload is too large")
 	}
+	recipientUnits := len(req.To) + len(req.CC) + len(req.BCC)
+	quotaReserved := false
+	if s.usageLimiter != nil && s.dailyLimit > 0 {
+		allowed, quotaErr := s.usageLimiter.Reserve(ctx, teamID, recipientUnits, s.dailyLimit)
+		if quotaErr != nil {
+			return nil, false, fmt.Errorf("%w: %v", ErrUsageUnavailable, quotaErr)
+		}
+		if !allowed {
+			return nil, false, ErrDailyRecipientLimit
+		}
+		quotaReserved = true
+	}
+	committed := false
+	defer func() {
+		if quotaReserved && !committed {
+			if releaseErr := s.usageLimiter.Release(ctx, teamID, recipientUnits); releaseErr != nil {
+				if s.logger != nil {
+					s.logger.Error("failed to release daily email quota", "team_id", teamID, "error", releaseErr)
+				}
+			}
+		}
+	}()
 	var idempotencyHash *string
 	if idempotencyKey != "" {
 		hash := hashSendRequest(req)
@@ -241,6 +272,7 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 		s.recordEvent(ctx, email.ID, "email.failed", map[string]string{"reason": "queue_unavailable"})
 		return nil, false, fmt.Errorf("%w: %v", ErrQueueUnavailable, queueErr)
 	}
+	committed = true
 
 	s.logger.Info("email queued", "email_id", email.ID)
 

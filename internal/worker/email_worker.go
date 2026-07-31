@@ -40,11 +40,17 @@ func (w *EmailWorker) Start(ctx context.Context) {
 	}
 
 	lastPromotion := time.Time{}
+	maintenance := time.NewTicker(30 * time.Second)
+	defer maintenance.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			w.logger.Info("email worker stopped")
 			return
+		case <-maintenance.C:
+			if err := w.emailService.RecoverSending(ctx); err != nil {
+				w.logger.Error("failed to recover stuck sending emails", "error", err)
+			}
 		default:
 			if lastPromotion.IsZero() || time.Since(lastPromotion) >= w.pollInterval {
 				if err := w.queue.PromoteScheduled(ctx); err != nil {

@@ -9,10 +9,13 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sender-api/sender-api/internal/domain"
 	"github.com/sender-api/sender-api/pkg/validator"
 )
+
+var ErrInboundDomainNotFound = errors.New("inbound recipient domain is not configured")
 
 type InboundService struct {
 	inboundRepo  domain.InboundEmailRepository
@@ -113,6 +116,9 @@ func (s *InboundService) TeamForRecipients(ctx context.Context, recipients []str
 		}
 		candidate, err := s.GetTeamByDomain(ctx, domainPart)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return uuid.Nil, fmt.Errorf("%w: %s", ErrInboundDomainNotFound, domainPart)
+			}
 			return uuid.Nil, err
 		}
 		if teamID == uuid.Nil {

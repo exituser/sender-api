@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,9 +14,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/sender-api/sender-api/internal/inbound"
 	"github.com/sender-api/sender-api/internal/service"
+	"github.com/sender-api/sender-api/pkg/sns"
 )
 
 const maxInboundMessageSize = 10 << 20
+
+var ErrDiscardInboundMessage = errors.New("discard inbound message")
 
 type InboundWorker struct {
 	s3Client       *s3.Client
@@ -69,15 +73,14 @@ func (w *InboundWorker) Start(ctx context.Context) {
 		for _, message := range messages.Messages {
 			if err := w.processMessage(ctx, message); err != nil {
 				w.logger.Error("failed to process inbound message", "error", err)
+				if errors.Is(err, ErrDiscardInboundMessage) {
+					if deleteErr := w.deleteMessage(ctx, message); deleteErr != nil {
+						w.logger.Error("failed to acknowledge discarded inbound message", "error", deleteErr)
+					}
+				}
 				continue
 			}
-			if message.ReceiptHandle == nil {
-				continue
-			}
-			if _, err := w.sqsClient.DeleteMessage(ctx, &sqs.DeleteMessageInput{
-				QueueUrl:      aws.String(w.queueURL),
-				ReceiptHandle: message.ReceiptHandle,
-			}); err != nil {
+			if err := w.deleteMessage(ctx, message); err != nil {
 				w.logger.Error("failed to delete inbound SQS message", "error", err)
 			}
 		}
@@ -90,6 +93,9 @@ func (w *InboundWorker) processMessage(ctx context.Context, message types.Messag
 	}
 	notification, err := inbound.DecodeAndVerifySNS(ctx, []byte(*message.Body), w.awsRegion, w.snsTopicArn)
 	if err != nil {
+		if errors.Is(err, sns.ErrStaleNotification) || errors.Is(err, sns.ErrInvalidNotification) {
+			return fmt.Errorf("%w: verify SNS message: %v", ErrDiscardInboundMessage, err)
+		}
 		return fmt.Errorf("verify SNS message: %w", err)
 	}
 	content := notification.Content
@@ -128,6 +134,19 @@ func (w *InboundWorker) processMessage(ctx context.Context, message types.Messag
 	}
 	rawS3Key := notification.Receipt.Action.ObjectKey
 	return w.inboundService.ProcessEmailWithMessageID(ctx, teamID, messageID, parsed.From, routingRecipients, parsed.Subject, content, "", nil, rawS3Key)
+}
+
+func (w *InboundWorker) deleteMessage(ctx context.Context, message types.Message) error {
+	if message.ReceiptHandle == nil {
+		return nil
+	}
+	if _, err := w.sqsClient.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+		QueueUrl:      aws.String(w.queueURL),
+		ReceiptHandle: message.ReceiptHandle,
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (w *InboundWorker) readRawEmail(ctx context.Context, bucket, key string) (string, error) {

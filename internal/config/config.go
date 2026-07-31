@@ -37,6 +37,8 @@ type Config struct {
 
 	SentryDSN             string
 	SentryTraceSampleRate float64
+	MetricsToken          string
+	DailyRecipientLimit   int
 
 	InboundS3Bucket     string
 	InboundSQSQueueURL  string
@@ -72,6 +74,8 @@ func Load() *Config {
 
 		SentryDSN:             os.Getenv("SENTRY_DSN"),
 		SentryTraceSampleRate: getFloatEnv("SENTRY_TRACES_SAMPLE_RATE", 0),
+		MetricsToken:          os.Getenv("METRICS_TOKEN"),
+		DailyRecipientLimit:   getPositiveIntEnv("DAILY_RECIPIENT_LIMIT", 1000),
 
 		InboundS3Bucket:     getEnv("INBOUND_S3_BUCKET", "sender-api-inbound"),
 		InboundSQSQueueURL:  os.Getenv("INBOUND_SQS_QUEUE_URL"),
@@ -85,7 +89,7 @@ func (c *Config) IsProduction() bool {
 }
 
 func (c *Config) Validate() error {
-	if err := validateCORSOrigins(c.CORSOrigins); err != nil {
+	if err := validateCORSOrigins(c.CORSOrigins, c.IsProduction()); err != nil {
 		return err
 	}
 	if c.DBMaxConns != 0 && c.DBMaxConns < 1 {
@@ -100,6 +104,9 @@ func (c *Config) Validate() error {
 	if c.WorkerPollInterval < 0 {
 		return fmt.Errorf("WORKER_POLL_INTERVAL must not be negative")
 	}
+	if c.DailyRecipientLimit < 0 {
+		return fmt.Errorf("DAILY_RECIPIENT_LIMIT must not be negative")
+	}
 	if math.IsNaN(c.SentryTraceSampleRate) || c.SentryTraceSampleRate < 0 || c.SentryTraceSampleRate > 1 {
 		return fmt.Errorf("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1")
 	}
@@ -107,17 +114,32 @@ func (c *Config) Validate() error {
 		if c.Debug {
 			return fmt.Errorf("DEBUG must be false in production")
 		}
+		supabaseURL, err := url.Parse(c.SupabaseURL)
+		if err != nil || supabaseURL.Scheme != "https" || supabaseURL.Hostname() == "" {
+			return fmt.Errorf("SUPABASE_URL must be an HTTPS URL in production")
+		}
+		if c.DatabaseURL == "postgresql://supabase_admin:postgres@localhost:5432/sender_api" ||
+			c.SupabaseURL == "http://localhost:54321" || c.RedisURL == "localhost:6379" || c.RedisURL == "redis:6379" {
+			return fmt.Errorf("development service defaults are not allowed in production")
+		}
 		for key, value := range map[string]string{
-			"DATABASE_URL": c.DatabaseURL,
-			"REDIS_URL":    c.RedisURL,
-			"SUPABASE_URL": c.SupabaseURL,
-			"AWS_REGION":   c.AWSRegion,
-			"CORS_ORIGINS": c.CORSOrigins,
+			"DATABASE_URL":  c.DatabaseURL,
+			"REDIS_URL":     c.RedisURL,
+			"SUPABASE_URL":  c.SupabaseURL,
+			"AWS_REGION":    c.AWSRegion,
+			"CORS_ORIGINS":  c.CORSOrigins,
+			"METRICS_TOKEN": c.MetricsToken,
 		} {
 			if strings.TrimSpace(value) == "" {
 				return fmt.Errorf("%s is required in production", key)
 			}
 		}
+		if c.DailyRecipientLimit < 1 {
+			return fmt.Errorf("DAILY_RECIPIENT_LIMIT must be positive in production")
+		}
+	}
+	if c.OutboundSESTopicArn != "" && strings.TrimSpace(c.AWSESConfigSet) == "" {
+		return fmt.Errorf("AWS_SES_CONFIGSET is required when OUTBOUND_SES_TOPIC_ARN is configured")
 	}
 	if c.InboundSQSQueueURL != "" && strings.TrimSpace(c.InboundS3Bucket) == "" {
 		return fmt.Errorf("INBOUND_S3_BUCKET is required when INBOUND_SQS_QUEUE_URL is configured")
@@ -128,7 +150,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func validateCORSOrigins(raw string) error {
+func validateCORSOrigins(raw string, requireHTTPS bool) error {
 	origins := strings.Split(raw, ",")
 	if len(origins) == 0 {
 		return fmt.Errorf("CORS_ORIGINS must contain an explicit origin allowlist")
@@ -137,9 +159,11 @@ func validateCORSOrigins(raw string) error {
 		origin = strings.TrimSpace(origin)
 		parsed, err := url.Parse(origin)
 		if err != nil || origin == "" || strings.Contains(origin, "*") ||
-			(parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+			(requireHTTPS && parsed.Scheme != "https") || parsed.Hostname() == "" ||
 			parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-			(parsed.Path != "" && parsed.Path != "/") {
+			(parsed.Path != "" && parsed.Path != "/") ||
+			(requireHTTPS && (parsed.Hostname() == "localhost" || strings.HasSuffix(parsed.Hostname(), ".localhost"))) {
 			return fmt.Errorf("CORS_ORIGINS must contain explicit http(s) origins")
 		}
 	}

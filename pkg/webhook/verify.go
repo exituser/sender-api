@@ -40,8 +40,15 @@ func SendWebhook(url string, secret string, event string, payload any) error {
 }
 
 func SendWebhookWithID(ctx context.Context, deliveryID uuid.UUID, url string, secret string, event string, payload any) error {
+	return SendWebhookWithIDPolicy(ctx, deliveryID, url, secret, event, payload, false)
+}
+
+func SendWebhookWithIDPolicy(ctx context.Context, deliveryID uuid.UUID, url string, secret string, event string, payload any, requireHTTPS bool) error {
 	if !validator.IsValidURL(url) {
 		return fmt.Errorf("unsafe webhook url")
+	}
+	if requireHTTPS && !validator.IsValidHTTPSURL(url) {
+		return fmt.Errorf("webhook url must use HTTPS")
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/google/uuid"
@@ -41,6 +42,83 @@ func (s *emailServiceRepoStub) CancelQueued(context.Context, uuid.UUID, uuid.UUI
 
 type emailServiceSenderStub struct {
 	calls int
+}
+
+type usageLimiterStub struct {
+	allowed      bool
+	reserveErr   error
+	releaseErr   error
+	reserveUnits int
+	reserveLimit int
+	releaseUnits int
+}
+
+func (s *usageLimiterStub) Reserve(_ context.Context, _ uuid.UUID, units, limit int) (bool, error) {
+	s.reserveUnits = units
+	s.reserveLimit = limit
+	return s.allowed, s.reserveErr
+}
+
+func (s *usageLimiterStub) Release(_ context.Context, _ uuid.UUID, units int) error {
+	s.releaseUnits = units
+	return s.releaseErr
+}
+
+type emailServiceDomainRepoStub struct {
+	domain.DomainRepository
+	domain *domain.Domain
+}
+
+func (s *emailServiceDomainRepoStub) GetByName(context.Context, uuid.UUID, string) (*domain.Domain, error) {
+	return s.domain, nil
+}
+
+type quotaEmailRepoStub struct {
+	domain.EmailRepository
+	createCalls       int
+	updateStatusCalls int
+	addEventCalls     int
+	createErr         error
+}
+
+func (s *quotaEmailRepoStub) Create(_ context.Context, _ *domain.Email) error {
+	s.createCalls++
+	return s.createErr
+}
+
+func (s *quotaEmailRepoStub) UpdateStatus(context.Context, uuid.UUID, domain.EmailStatus) error {
+	s.updateStatusCalls++
+	return nil
+}
+
+func (s *quotaEmailRepoStub) AddEvent(context.Context, *domain.EmailEvent) error {
+	s.addEventCalls++
+	return nil
+}
+
+type quotaQueueStub struct {
+	domain.EmailQueue
+	enqueueCalls int
+	enqueueErr   error
+}
+
+func (s *quotaQueueStub) Enqueue(context.Context, string) error {
+	s.enqueueCalls++
+	return s.enqueueErr
+}
+
+func newQuotaEmailService(repo *quotaEmailRepoStub, queue domain.EmailQueue) *EmailService {
+	teamDomain := &emailServiceDomainRepoStub{domain: &domain.Domain{Status: domain.DomainStatusVerified}}
+	return NewEmailService(repo, teamDomain, queue, nil, nil, nil, slog.Default())
+}
+
+func quotaRequest() *domain.SendEmailRequest {
+	return &domain.SendEmailRequest{
+		From:    "sender@example.com",
+		To:      []string{"one@example.net", "two@example.net"},
+		Subject: "hello",
+		Text:    "body",
+	}
 }
 
 func (s *emailServiceSenderStub) Send(context.Context, *domain.Email) (string, error) {
@@ -84,5 +162,64 @@ func TestEmailServiceDoesNotSendAfterClaimWasLost(t *testing.T) {
 	}
 	if sender.calls != 0 {
 		t.Fatalf("sender was called after claim was lost: %d", sender.calls)
+	}
+}
+
+func TestEmailServiceRejectsDailyRecipientLimitBeforePersisting(t *testing.T) {
+	teamID := uuid.New()
+	repo := &quotaEmailRepoStub{}
+	queue := &quotaQueueStub{}
+	limiter := &usageLimiterStub{allowed: false}
+	service := newQuotaEmailService(repo, queue)
+	service.SetUsageLimiter(limiter, 10)
+
+	_, err := service.Send(context.Background(), teamID, quotaRequest())
+	if !errors.Is(err, ErrDailyRecipientLimit) {
+		t.Fatalf("expected daily limit error, got %v", err)
+	}
+	if limiter.reserveUnits != 2 || limiter.reserveLimit != 10 {
+		t.Fatalf("expected two recipients reserved against limit 10, got units=%d limit=%d", limiter.reserveUnits, limiter.reserveLimit)
+	}
+	if repo.createCalls != 0 || queue.enqueueCalls != 0 {
+		t.Fatalf("expected rejected request not to persist or enqueue: creates=%d enqueues=%d", repo.createCalls, queue.enqueueCalls)
+	}
+}
+
+func TestEmailServiceReleasesDailyRecipientLimitWhenQueueFails(t *testing.T) {
+	teamID := uuid.New()
+	repo := &quotaEmailRepoStub{}
+	queue := &quotaQueueStub{enqueueErr: errors.New("redis down")}
+	limiter := &usageLimiterStub{allowed: true}
+	service := newQuotaEmailService(repo, queue)
+	service.SetUsageLimiter(limiter, 10)
+
+	_, err := service.Send(context.Background(), teamID, quotaRequest())
+	if !errors.Is(err, ErrQueueUnavailable) {
+		t.Fatalf("expected queue error, got %v", err)
+	}
+	if limiter.releaseUnits != 2 {
+		t.Fatalf("expected two reserved recipients to be released, got %d", limiter.releaseUnits)
+	}
+	if repo.updateStatusCalls != 1 || repo.addEventCalls != 1 {
+		t.Fatalf("expected failed queued email to be marked and recorded: status=%d events=%d", repo.updateStatusCalls, repo.addEventCalls)
+	}
+}
+
+func TestEmailServiceKeepsDailyRecipientLimitAfterSuccessfulQueue(t *testing.T) {
+	teamID := uuid.New()
+	repo := &quotaEmailRepoStub{}
+	queue := &quotaQueueStub{}
+	limiter := &usageLimiterStub{allowed: true}
+	service := newQuotaEmailService(repo, queue)
+	service.SetUsageLimiter(limiter, 10)
+
+	if _, err := service.Send(context.Background(), teamID, quotaRequest()); err != nil {
+		t.Fatalf("expected email to queue, got %v", err)
+	}
+	if limiter.releaseUnits != 0 {
+		t.Fatalf("expected successful queue to keep reservation, released %d units", limiter.releaseUnits)
+	}
+	if repo.createCalls != 1 || queue.enqueueCalls != 1 {
+		t.Fatalf("expected one persisted and enqueued email: creates=%d enqueues=%d", repo.createCalls, queue.enqueueCalls)
 	}
 }

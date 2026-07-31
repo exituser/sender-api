@@ -82,7 +82,7 @@ func DecodeAndVerifySNS(ctx context.Context, body []byte, region, expectedTopicA
 		return nil, err
 	}
 	if expectedTopicArn != "" && notification.TopicArn != expectedTopicArn {
-		return nil, fmt.Errorf("unexpected SNS topic")
+		return nil, fmt.Errorf("%w: unexpected SNS topic", sns.ErrInvalidNotification)
 	}
 	inner, err := DecodeNotification([]byte(notification.Message))
 	if err != nil {

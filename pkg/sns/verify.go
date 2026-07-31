@@ -42,50 +42,57 @@ var certificateCache = struct {
 	entries map[string]certificateCacheEntry
 }{entries: make(map[string]certificateCacheEntry)}
 
+var (
+	ErrStaleNotification   = errors.New("stale SNS notification")
+	ErrInvalidNotification = errors.New("invalid SNS notification")
+)
+
 var snsCertificateHost = regexp.MustCompile(`^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$`)
 
 func VerifyNotification(ctx context.Context, notification Notification, region string, now time.Time) error {
 	if notification.Type != "Notification" {
-		return fmt.Errorf("unsupported SNS message type")
+		return fmt.Errorf("%w: unsupported SNS message type", ErrInvalidNotification)
 	}
 	if notification.Message == "" || notification.MessageID == "" || notification.TopicArn == "" ||
 		notification.Timestamp == "" || notification.Signature == "" || notification.SigningCertURL == "" ||
 		(notification.SignatureVersion != "1" && notification.SignatureVersion != "2") {
-		return fmt.Errorf("incomplete SNS notification")
+		return fmt.Errorf("%w: incomplete SNS notification", ErrInvalidNotification)
 	}
 	timestamp, err := time.Parse(time.RFC3339, notification.Timestamp)
 	if err != nil || timestamp.Before(now.Add(-5*time.Minute)) || timestamp.After(now.Add(5*time.Minute)) {
-		return fmt.Errorf("stale SNS notification")
+		return fmt.Errorf("%w", ErrStaleNotification)
 	}
 	if !validCertificateURL(notification.SigningCertURL, region) {
-		return fmt.Errorf("invalid SNS signing certificate URL")
+		return fmt.Errorf("%w: invalid SNS signing certificate URL", ErrInvalidNotification)
 	}
-	if notification.SignatureVersion != "1" && notification.SignatureVersion != "2" {
-		return fmt.Errorf("unsupported SNS signature version")
-	}
-
 	certificate, err := getCertificate(ctx, notification.SigningCertURL)
 	if err != nil {
 		return fmt.Errorf("load SNS signing certificate: %w", err)
 	}
 	publicKey, ok := certificate.PublicKey.(*rsa.PublicKey)
 	if !ok {
-		return fmt.Errorf("SNS signing certificate is not RSA")
+		return fmt.Errorf("%w: SNS signing certificate is not RSA", ErrInvalidNotification)
 	}
 	signature, err := base64.StdEncoding.DecodeString(notification.Signature)
 	if err != nil {
-		return fmt.Errorf("decode SNS signature: %w", err)
+		return fmt.Errorf("%w: decode SNS signature: %v", ErrInvalidNotification, err)
 	}
 	message := []byte(StringToSign(notification))
 	switch notification.SignatureVersion {
 	case "1":
 		digest := sha1.Sum(message) // #nosec G401 -- required by SNS SignatureVersion 1.
-		return rsa.VerifyPKCS1v15(publicKey, crypto.SHA1, digest[:], signature)
+		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA1, digest[:], signature); err != nil {
+			return fmt.Errorf("%w: verify SNS signature: %v", ErrInvalidNotification, err)
+		}
+		return nil
 	case "2":
 		digest := sha256.Sum256(message)
-		return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature)
+		if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+			return fmt.Errorf("%w: verify SNS signature: %v", ErrInvalidNotification, err)
+		}
+		return nil
 	default:
-		return fmt.Errorf("unsupported SNS signature version")
+		return fmt.Errorf("%w: unsupported SNS signature version", ErrInvalidNotification)
 	}
 }
 

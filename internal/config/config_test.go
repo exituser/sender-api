@@ -34,18 +34,52 @@ func TestValidateRequiresInboundSNSTopicWithQueue(t *testing.T) {
 	}
 }
 
-func TestValidateProductionAllowsOptionalSNSIntegrations(t *testing.T) {
+func TestValidateProductionRequiresCoreOperationalSettings(t *testing.T) {
 	cfg := &Config{
-		Env:         "production",
-		CORSOrigins: "https://app.example.com",
-		DatabaseURL: "postgresql://db/sender_api",
-		RedisURL:    "redis:6379",
-		SupabaseURL: "https://project.supabase.co",
-		AWSRegion:   "eu-west-1",
-		Debug:       false,
+		Env:                 "production",
+		CORSOrigins:         "https://app.example.com",
+		DatabaseURL:         "postgresql://db/sender_api",
+		RedisURL:            "rediss://redis.example:6380",
+		SupabaseURL:         "https://project.supabase.co",
+		AWSRegion:           "eu-west-1",
+		MetricsToken:        "metrics-secret",
+		DailyRecipientLimit: 1000,
+		Debug:               false,
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("expected production config without optional callbacks to validate: %v", err)
+		t.Fatalf("expected core production config to validate: %v", err)
+	}
+}
+
+func TestValidateRequiresSESConfigSetForOutboundEvents(t *testing.T) {
+	cfg := &Config{
+		CORSOrigins:         "http://localhost:3000",
+		OutboundSESTopicArn: "arn:aws:sns:eu-west-1:123:events",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected configuration set requirement for outbound events")
+	}
+}
+
+func TestValidateProductionRejectsHTTPOrigin(t *testing.T) {
+	cfg := &Config{Env: "production", CORSOrigins: "http://app.example.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected production HTTP origin to be rejected")
+	}
+}
+
+func TestValidateProductionRejectsHTTPAuthEndpoint(t *testing.T) {
+	cfg := &Config{
+		Env:          "production",
+		CORSOrigins:  "https://app.example.com",
+		SupabaseURL:  "http://auth.internal",
+		DatabaseURL:  "postgresql://db/sender_api",
+		RedisURL:     "rediss://redis.example:6380",
+		AWSRegion:    "eu-west-1",
+		MetricsToken: "metrics-secret",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected production HTTP auth endpoint to be rejected")
 	}
 }
 

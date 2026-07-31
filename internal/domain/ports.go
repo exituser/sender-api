@@ -154,3 +154,8 @@ type EmailQueue interface {
 	Requeue(ctx context.Context, emailID string, countAttempt bool) error
 	Recover(ctx context.Context) error
 }
+
+type UsageLimiter interface {
+	Reserve(ctx context.Context, teamID uuid.UUID, units, limit int) (bool, error)
+	Release(ctx context.Context, teamID uuid.UUID, units int) error
+}

@@ -38,6 +38,15 @@ func TestIsValidURLRejectsPrivateTargets(t *testing.T) {
 	}
 }
 
+func TestIsValidHTTPSURLRequiresHTTPS(t *testing.T) {
+	if IsValidHTTPSURL("http://example.com/webhook") {
+		t.Fatal("expected HTTPS validator to reject HTTP")
+	}
+	if !IsValidHTTPSURL("https://example.com/webhook") {
+		t.Fatal("expected HTTPS validator to accept a public HTTPS endpoint")
+	}
+}
+
 func TestIsPrivateIPRejectsUnroutableIPv4Range(t *testing.T) {
 	if !IsPrivateIP(net.ParseIP("0.1.2.3")) {
 		t.Fatal("expected 0.0.0.0/8 to be rejected")

@@ -61,6 +61,11 @@ func IsValidURL(rawURL string) bool {
 	return !IsPrivateHost(parsed.Hostname())
 }
 
+func IsValidHTTPSURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	return err == nil && strings.EqualFold(parsed.Scheme, "https") && IsValidURL(rawURL)
+}
+
 func IsValidDomain(domain string) bool {
 	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 	if domain == "" || net.ParseIP(domain) != nil {

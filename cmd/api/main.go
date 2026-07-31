@@ -101,6 +101,9 @@ func main() {
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		redisReady = false
 		logger.Warn("failed to connect to redis (continuing without queue)", "error", err)
+		if cfg.IsProduction() {
+			os.Exit(1)
+		}
 	}
 
 	awsCfg, err := awscfg.LoadDefaultConfig(ctx,
@@ -172,6 +175,7 @@ func main() {
 	sesMailer := mailer.NewSESMailer(sesClient, cfg.AWSESConfigSet, logger)
 
 	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger)
+	emailService.SetUsageLimiter(queue.NewRedisUsageLimiter(redisClient), cfg.DailyRecipientLimit)
 	teamService := service.NewTeamService(teamRepo, logger)
 	contactService := service.NewContactService(contactRepo, logger)
 	domainService := service.NewDomainService(domainRepo, logger, cfg.AWSRegion)
@@ -182,7 +186,7 @@ func main() {
 	contactHandler := handler.NewContactHandler(contactService)
 	domainHandler := handler.NewDomainHandler(domainService)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyRepo)
-	webhookHandler := handler.NewWebhookHandler(webhookRepo)
+	webhookHandler := handler.NewWebhookHandler(webhookRepo, cfg.IsProduction())
 	inboundHandler := handler.NewInboundHandler(inboundService, cfg.InboundWebhookToken, cfg.AWSRegion, cfg.InboundSNSTopicArn)
 	sesEventHandler := handler.NewSESEventHandler(emailService, cfg.AWSRegion, cfg.OutboundSESTopicArn)
 
@@ -193,6 +197,7 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 	r.Use(pkgmiddleware.CORS(cfg.CORSOrigins))
+	r.Use(pkgmiddleware.SecurityHeaders)
 	r.Use(pkgmiddleware.MaxBodyBytes(10 << 20))
 	r.Use(metrics.HTTP)
 
@@ -219,7 +224,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
-	r.Get("/metrics", metrics.Handler)
+	metricsHandler := http.Handler(http.HandlerFunc(metrics.Handler))
+	if cfg.MetricsToken != "" {
+		metricsHandler = pkgmiddleware.RequireToken(cfg.MetricsToken)(metricsHandler)
+	}
+	r.Mount("/metrics", metricsHandler)
 
 	// Provider callbacks must be registered before authenticated resource mounts
 	// that share the /webhooks and /inbound prefixes.

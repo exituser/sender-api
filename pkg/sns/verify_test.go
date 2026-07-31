@@ -1,6 +1,7 @@
 package sns
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -25,13 +26,17 @@ func TestVerifyNotificationRejectsStaleAndUnsafeMessagesBeforeNetwork(t *testing
 		name string
 		item Notification
 	}{
-		{name: "stale", item: Notification{Type: "Notification", Message: "x", MessageID: "id", Timestamp: time.Now().Add(-time.Hour).Format(time.RFC3339), TopicArn: "arn", Signature: "x", SigningCertURL: "https://sns.eu-west-1.amazonaws.com/cert.pem"}},
-		{name: "unsafe certificate host", item: Notification{Type: "Notification", Message: "x", MessageID: "id", Timestamp: time.Now().Format(time.RFC3339), TopicArn: "arn", Signature: "x", SigningCertURL: "https://example.com/cert.pem"}},
+		{name: "stale", item: Notification{Type: "Notification", Message: "x", MessageID: "id", Timestamp: time.Now().Add(-time.Hour).Format(time.RFC3339), TopicArn: "arn", Signature: "x", SignatureVersion: "2", SigningCertURL: "https://sns.eu-west-1.amazonaws.com/cert.pem"}},
+		{name: "unsafe certificate host", item: Notification{Type: "Notification", Message: "x", MessageID: "id", Timestamp: time.Now().Format(time.RFC3339), TopicArn: "arn", Signature: "x", SignatureVersion: "2", SigningCertURL: "https://example.com/cert.pem"}},
 		{name: "missing signature version", item: Notification{Type: "Notification", Message: "x", MessageID: "id", Timestamp: time.Now().Format(time.RFC3339), TopicArn: "arn", Signature: "x", SigningCertURL: "https://sns.eu-west-1.amazonaws.com/cert.pem"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := VerifyNotification(t.Context(), test.item, "eu-west-1", time.Now()); err == nil {
+			err := VerifyNotification(t.Context(), test.item, "eu-west-1", time.Now())
+			if err == nil {
 				t.Fatal("expected SNS notification to be rejected")
+			}
+			if test.name == "stale" && !errors.Is(err, ErrStaleNotification) {
+				t.Fatalf("expected stale notification error, got %v", err)
 			}
 		})
 	}

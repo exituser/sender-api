@@ -54,6 +54,12 @@ func (h *EmailHandler) Send(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, service.ErrQueueUnavailable) {
 			status = http.StatusServiceUnavailable
 		}
+		if errors.Is(err, service.ErrUsageUnavailable) {
+			status = http.StatusServiceUnavailable
+		}
+		if errors.Is(err, service.ErrDailyRecipientLimit) {
+			status = http.StatusTooManyRequests
+		}
 		if errors.Is(err, service.ErrIdempotencyConflict) {
 			status = http.StatusConflict
 		}
@@ -94,6 +100,12 @@ func (h *EmailHandler) BatchSend(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQueueUnavailable) {
 			status = http.StatusServiceUnavailable
+		}
+		if errors.Is(err, service.ErrUsageUnavailable) {
+			status = http.StatusServiceUnavailable
+		}
+		if errors.Is(err, service.ErrDailyRecipientLimit) {
+			status = http.StatusTooManyRequests
 		}
 		writeError(w, err.Error(), status)
 		return
