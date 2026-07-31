@@ -18,9 +18,15 @@ BEGIN
     END LOOP;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_admin') THEN
-        REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anon, authenticated;
-        ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public
-            REVOKE ALL ON TABLES FROM anon, authenticated;
+        FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+                EXECUTE format('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM %I', role_name);
+                EXECUTE format(
+                    'ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public REVOKE ALL ON TABLES FROM %I',
+                    role_name
+                );
+            END IF;
+        END LOOP;
     END IF;
 END
 $$;
