@@ -108,7 +108,7 @@ services:
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://localhost:54321}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
     ports:
-      - "3000:3000"
+      - "${WEB_HOST_PORT:-3000}:3000"
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8080
       NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://localhost:54321}
@@ -147,7 +147,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/001_initial.up.sql:/docker-entrypoint-initdb.d/01_init.sql
       - ./migrations/003_hardening.up.sql:/docker-entrypoint-initdb.d/03_hardening.sql
-      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/04_compose_version.sql
+      - ./migrations/004_inbound_mx.up.sql:/docker-entrypoint-initdb.d/04_inbound_mx.sql
+      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/05_compose_version.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-supabase_admin} -d $${POSTGRES_DB:-sender_api}"]
       interval: 5s

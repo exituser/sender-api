@@ -206,19 +206,21 @@ domain.
 ### Migrations
 
 The first migration creates a fresh database schema. `002_delivery` is kept as
-a compatibility migration, and `003_hardening` adds tenant ownership,
+a compatibility migration, `003_hardening` adds tenant ownership,
 idempotency, indexes, inbound deduplication, sending recovery timestamps, and
-durable webhook deliveries.
+durable webhook deliveries, and `004_inbound_mx` adds the SES inbound MX
+verification state.
 Apply all migrations with:
 
 ```bash
 DATABASE_URL=postgresql://supabase_admin:postgres@localhost:5432/sender_api make migrate-up
 ```
 
-The Compose database is initialized from `migrations/001_initial.up.sql` and
-`migrations/003_hardening.up.sql`; its `schema_migrations` marker is set to
-version 3. Use the migration command for an already-existing database. Compose
-initialization only runs for a new database volume. Existing installations with
+The Compose database is initialized from `migrations/001_initial.up.sql`,
+`migrations/003_hardening.up.sql`, and `migrations/004_inbound_mx.up.sql`; its
+`schema_migrations` marker is set to version 4. Use the migration command for
+an already-existing database. Compose initialization only runs for a new
+database volume. Existing installations with
 duplicate normalized domains or nullable tenant IDs must be reviewed before
 applying `003_hardening`; the migration fails rather than silently rewriting
 them.
