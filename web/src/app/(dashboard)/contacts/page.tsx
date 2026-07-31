@@ -10,6 +10,7 @@ interface Contact {
   first_name: string;
   last_name: string;
   subscribed: boolean;
+  properties?: Record<string, string>;
   created_at: string;
 }
 
@@ -21,7 +22,10 @@ export default function ContactsPage() {
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ email: "", first_name: "", last_name: "" });
+  const emptyForm = { email: "", first_name: "", last_name: "", subscribed: true, properties: "" };
+  const [form, setForm] = useState(emptyForm);
+  const [editing, setEditing] = useState<Contact | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const loadContacts = useCallback(async () => {
     setLoading(true);
@@ -41,13 +45,22 @@ export default function ContactsPage() {
     void Promise.resolve().then(loadContacts);
   }, [loadContacts]);
 
+  const parseProperties = (value: string) => Object.fromEntries(value.split("\n").filter(Boolean).map((line) => {
+    const [key, ...parts] = line.split("=");
+    if (!key?.trim() || parts.length === 0) throw new Error("Properties must use key=value, one per line");
+    return [key.trim(), parts.join("=").trim()];
+  }));
+
   const addContact = async (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
     setSaving(true);
     try {
-      await api.contacts.create(form);
-      setForm({ email: "", first_name: "", last_name: "" });
+      const payload = { email: form.email, first_name: form.first_name || undefined, last_name: form.last_name || undefined, subscribed: form.subscribed, properties: parseProperties(form.properties) };
+      if (editing) await api.contacts.update(editing.id, payload);
+      else await api.contacts.create(payload);
+      setForm(emptyForm);
+      setEditing(null);
       setShowForm(false);
       await loadContacts();
     } catch (err) {
@@ -57,17 +70,40 @@ export default function ContactsPage() {
     }
   };
 
+  const beginEdit = (contact: Contact) => {
+    setEditing(contact);
+    setForm({ email: contact.email, first_name: contact.first_name ?? "", last_name: contact.last_name ?? "", subscribed: contact.subscribed, properties: Object.entries(contact.properties ?? {}).map(([key, value]) => `${key}=${value}`).join("\n") });
+    setShowForm(true);
+  };
+
+  const deleteContact = async (id: string) => {
+    if (!window.confirm("Delete this contact?")) return;
+    setError("");
+    try { await api.contacts.delete(id); await loadContacts(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Failed to delete contact"); }
+  };
+
+  const importContacts = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setImporting(true); setError("");
+    try { const data = new FormData(); data.append("file", file); await api.contacts.import(data); await loadContacts(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Failed to import contacts"); }
+    finally { setImporting(false); }
+  };
+
   if (loading) {
     return <div className="text-center py-8">Loading...</div>;
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center gap-3">
         <h1 className="text-2xl font-bold">Contacts</h1>
-        <button type="button" onClick={() => setShowForm((visible) => !visible)} aria-expanded={showForm} aria-controls="contact-form" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        <div className="flex gap-3"><label className="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-800 cursor-pointer">{importing ? "Importing..." : "Import CSV"}<input type="file" accept=".csv,text/csv" onChange={importContacts} disabled={importing} className="sr-only" /></label><button type="button" onClick={() => { setEditing(null); setForm(emptyForm); setShowForm((visible) => !visible); }} aria-expanded={showForm} aria-controls="contact-form" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
           Add Contact
-        </button>
+        </button></div>
       </div>
 
       {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
@@ -79,7 +115,9 @@ export default function ContactsPage() {
           <input id="contact-first-name" name="first_name" autoComplete="off" placeholder="First name" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} className="px-3 py-2 border rounded-md" />
           <label htmlFor="contact-last-name" className="sr-only">Last name</label>
           <input id="contact-last-name" name="last_name" autoComplete="off" placeholder="Last name" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} className="px-3 py-2 border rounded-md" />
-          <button disabled={saving} aria-busy={saving} type="submit" className="md:col-span-3 px-4 py-2 bg-green-600 text-white rounded-md disabled:opacity-50">{saving ? "Saving..." : "Save contact"}</button>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.subscribed} onChange={(e) => setForm({ ...form, subscribed: e.target.checked })} /> Subscribed</label>
+          <textarea placeholder="Properties: key=value" value={form.properties} onChange={(e) => setForm({ ...form, properties: e.target.value })} className="md:col-span-2 px-3 py-2 border rounded-md" />
+          <button disabled={saving} aria-busy={saving} type="submit" className="md:col-span-3 px-4 py-2 bg-green-600 text-white rounded-md disabled:opacity-50">{saving ? "Saving..." : editing ? "Update contact" : "Save contact"}</button>
         </form>
       )}
 
@@ -99,6 +137,7 @@ export default function ContactsPage() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Created
               </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
@@ -124,6 +163,7 @@ export default function ContactsPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {new Date(contact.created_at).toLocaleDateString()}
                 </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm"><button type="button" onClick={() => beginEdit(contact)} className="text-blue-600 hover:underline">Edit</button><button type="button" onClick={() => deleteContact(contact.id)} className="ml-3 text-red-600 hover:underline">Delete</button></td>
               </tr>
             ))}
           </tbody>

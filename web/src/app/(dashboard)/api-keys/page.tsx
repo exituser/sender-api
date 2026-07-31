@@ -7,6 +7,7 @@ interface APIKey {
   id: string;
   name: string;
   key_prefix: string;
+  permissions: string[];
   created_at: string;
 }
 
@@ -16,6 +17,8 @@ export default function APIKeysPage() {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [newKey, setNewKey] = useState("");
+  const [permissions, setPermissions] = useState<string[]>(["send"]);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
   const loadKeys = useCallback(async () => {
@@ -37,15 +40,23 @@ export default function APIKeysPage() {
   const createKey = async (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
+    setCreating(true);
     try {
-      const response = await api.apiKeys.create({ name }) as { key: string };
+      const response = await api.apiKeys.create({ name, permissions }) as { key: string };
       setNewKey(response.key);
       setName("");
       setShowForm(false);
       await loadKeys();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create key");
+    } finally {
+      setCreating(false);
     }
+  };
+
+  const togglePermission = (permission: string) => {
+    if (permission === "*") setPermissions(permissions.includes("*") ? [] : ["*"]);
+    else setPermissions((current) => current.includes("*") ? [permission] : current.includes(permission) ? current.filter((item) => item !== permission) : [...current, permission]);
   };
 
   const deleteKey = async (id: string) => {
@@ -74,10 +85,13 @@ export default function APIKeysPage() {
       {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
       {newKey && <div className="p-3 bg-yellow-50 text-yellow-900 rounded-md text-sm">Copy this key now: <code>{newKey}</code></div>}
       {showForm && (
-        <form id="api-key-form" onSubmit={createKey} className="bg-white shadow rounded-lg p-6 flex gap-3">
+        <form id="api-key-form" onSubmit={createKey} className="bg-white shadow rounded-lg p-6 space-y-3">
+          <div className="flex gap-3">
           <label htmlFor="api-key-name" className="sr-only">Key name</label>
           <input id="api-key-name" name="name" required placeholder="Key name" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 px-3 py-2 border rounded-md" />
-          <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded-md">Create</button>
+          <button disabled={creating || permissions.length === 0} type="submit" className="px-4 py-2 bg-green-600 text-white rounded-md disabled:opacity-50">{creating ? "Creating..." : "Create"}</button>
+          </div>
+          <fieldset><legend className="text-sm font-medium text-gray-700">Permissions</legend><div className="mt-2 flex gap-4">{["send", "read", "*"].map((permission) => <label key={permission} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={permissions.includes(permission)} onChange={() => togglePermission(permission)} /> {permission === "*" ? "Full access (*)" : permission}</label>)}</div></fieldset>
         </form>
       )}
 
@@ -94,6 +108,7 @@ export default function APIKeysPage() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Created
               </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Permissions</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Actions
               </th>
@@ -111,6 +126,7 @@ export default function APIKeysPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {new Date(key.created_at).toLocaleDateString()}
                 </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{key.permissions?.join(", ") || "send"}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
                   <button onClick={() => deleteKey(key.id)} className="text-red-600 hover:text-red-900">
                     Delete

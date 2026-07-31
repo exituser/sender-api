@@ -13,6 +13,7 @@ const navigation = [
   { name: "Webhooks", href: "/webhooks" },
   { name: "Inbound", href: "/inbound" },
   { name: "Settings", href: "/settings/team" },
+  { name: "Billing", href: "/settings/billing" },
 ];
 
 export function DashboardNav() {

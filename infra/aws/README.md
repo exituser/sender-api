@@ -15,7 +15,11 @@ also intentionally not enabled until a public callback URL is selected.
 
 The template deliberately does not create an SES receipt rule. A receipt rule
 contains the verified recipient domain and is mail-flow configuration, so it is
-applied only after confirming the domain and the desired retention period.
+applied only after confirming the domain and the desired retention period. The
+repository includes the fail-closed `scripts/apply-aws-inbound.sh` helper for
+that explicit step; it refuses to overwrite a mismatched existing rule and
+requires `CONFIRM_RECEIPT_RULE_ACTIVATION=YES` before switching active mail
+routing.
 
 ## Provision the transport
 
@@ -76,27 +80,20 @@ checking it in SES. The correct SES receiving action is `SnsAction`; SNS then
 delivers the notification to SQS. Do not use a fictitious SES `SqsAction`.
 
 ```bash
-aws ses create-receipt-rule-set \
-  --region "${AWS_REGION}" \
-  --rule-set-name sender-api-inbound
+AWS_REGION=eu-west-1 \
+INBOUND_DOMAIN=example.com \
+INBOUND_BUCKET=sender-api-inbound \
+INBOUND_TOPIC_ARN=arn:aws:sns:eu-west-1:123456789012:sender-api-inbound \
+./scripts/apply-aws-inbound.sh
 
-aws ses create-receipt-rule \
-  --region "${AWS_REGION}" \
-  --rule-set-name sender-api-inbound \
-  --rule '{
-    "Name": "store-and-notify",
-    "Enabled": true,
-    "ScanEnabled": true,
-    "Recipients": ["<verified-domain>"],
-    "Actions": [
-      {"S3Action": {"BucketName": "sender-api-inbound", "ObjectKeyPrefix": "raw/"}},
-      {"SNSAction": {"TopicArn": "<inbound-topic-arn>", "Encoding": "UTF-8"}}
-    ]
-  }'
-
-aws ses set-active-receipt-rule-set \
-  --region "${AWS_REGION}" \
-  --rule-set-name sender-api-inbound
+# Only after reviewing the prepared rule and confirming the MX/mail-flow
+# switch, activate it explicitly:
+CONFIRM_RECEIPT_RULE_ACTIVATION=YES \
+AWS_REGION=eu-west-1 \
+INBOUND_DOMAIN=example.com \
+INBOUND_BUCKET=sender-api-inbound \
+INBOUND_TOPIC_ARN=arn:aws:sns:eu-west-1:123456789012:sender-api-inbound \
+./scripts/apply-aws-inbound.sh
 ```
 
 The domain must have MX records pointing to the SES inbound SMTP endpoint for

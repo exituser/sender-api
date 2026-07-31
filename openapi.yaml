@@ -70,6 +70,70 @@ paths:
       summary: Create a team
       requestBody: { $ref: '#/components/requestBodies/JSON' }
       responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /teams/{id}:
+    parameters: [ { $ref: '#/components/parameters/ID' } ]
+    get:
+      summary: Get a team
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    patch:
+      summary: Rename a team
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    delete:
+      summary: Delete a team
+      responses: { '204': { description: Deleted } }
+  /teams/{id}/members:
+    parameters: [ { $ref: '#/components/parameters/ID' } ]
+    get:
+      summary: List team members
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /teams/{id}/members/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      summary: Remove a team member
+      responses: { '204': { description: Removed } }
+  /teams/{id}/members/{userId}/role:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      summary: Change a team member role
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '204': { description: Updated } }
+  /teams/{id}/invite:
+    parameters: [ { $ref: '#/components/parameters/ID' } ]
+    post:
+      summary: Create a single-use team invitation
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /teams/{id}/invitations:
+    parameters: [ { $ref: '#/components/parameters/ID' } ]
+    get:
+      summary: List team invitations
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /teams/{id}/invitations/{invitationId}:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - name: invitationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      summary: Revoke a pending team invitation
+      responses: { '204': { description: Revoked } }
+  /teams/invitations/accept:
+    post:
+      summary: Accept a team invitation for the authenticated user
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
   /contacts:
     get:
       summary: List contacts
@@ -89,6 +153,18 @@ paths:
         content:
           multipart/form-data: { schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } } }
       responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /contacts/{id}:
+    parameters: [ { $ref: '#/components/parameters/ID' }, { $ref: '#/components/parameters/TeamID' } ]
+    get:
+      summary: Get a contact
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    patch:
+      summary: Update a contact
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    delete:
+      summary: Delete a contact
+      responses: { '204': { description: Deleted } }
   /domains:
     get:
       summary: List sender domains
@@ -106,6 +182,14 @@ paths:
     post:
       summary: Verify DNS records for a domain
       responses: { '204': { description: Verification complete } }
+  /domains/{id}:
+    parameters: [ { $ref: '#/components/parameters/ID' }, { $ref: '#/components/parameters/TeamID' } ]
+    get:
+      summary: Get a sender domain
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    delete:
+      summary: Delete a sender domain
+      responses: { '204': { description: Deleted } }
   /api-keys:
     get:
       summary: List API keys
@@ -116,6 +200,11 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TeamID' } ]
       requestBody: { $ref: '#/components/requestBodies/JSON' }
       responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /api-keys/{id}:
+    parameters: [ { $ref: '#/components/parameters/ID' }, { $ref: '#/components/parameters/TeamID' } ]
+    delete:
+      summary: Revoke an API key
+      responses: { '204': { description: Revoked } }
   /webhooks:
     get:
       summary: List webhooks
@@ -126,11 +215,65 @@ paths:
       parameters: [ { $ref: '#/components/parameters/TeamID' } ]
       requestBody: { $ref: '#/components/requestBodies/JSON' }
       responses: { '201': { $ref: '#/components/responses/JSON' } }
+  /webhooks/{id}:
+    parameters: [ { $ref: '#/components/parameters/ID' }, { $ref: '#/components/parameters/TeamID' } ]
+    get:
+      summary: Get a webhook
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    patch:
+      summary: Update or disable a webhook
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+    delete:
+      summary: Delete a webhook
+      responses: { '204': { description: Deleted } }
+  /webhooks/{id}/deliveries:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/TeamID'
+      - $ref: '#/components/parameters/Limit'
+    get:
+      summary: List recent webhook delivery attempts
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /webhooks/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/TeamID'
+    post:
+      summary: Queue a test webhook delivery
+      responses:
+        '202': { $ref: '#/components/responses/JSON' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /inbound:
     get:
       summary: List inbound emails
       parameters: [ { $ref: '#/components/parameters/TeamID' }, { $ref: '#/components/parameters/Limit' }, { $ref: '#/components/parameters/Offset' } ]
       responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /inbound/{id}:
+    parameters: [ { $ref: '#/components/parameters/ID' }, { $ref: '#/components/parameters/TeamID' } ]
+    get:
+      summary: Get a parsed inbound email
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /billing:
+    get:
+      summary: Get the current team billing state
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /billing/checkout:
+    post:
+      summary: Create a Stripe checkout session
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      requestBody: { $ref: '#/components/requestBodies/JSON' }
+      responses:
+        '200': { $ref: '#/components/responses/JSON' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /billing/portal:
+    post:
+      summary: Create a Stripe customer portal session
+      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      responses:
+        '200': { $ref: '#/components/responses/JSON' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /inbound/ses:
     post:
       summary: Receive an SES inbound SNS notification
@@ -145,6 +288,19 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/JSON' }
         '401': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /webhooks/stripe:
+    post:
+      summary: Receive a verified Stripe subscription event
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/JSON' }
+        '400': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
@@ -185,6 +341,11 @@ components:
         subject: { type: string, maxLength: 998 }
         text: { type: string }
         html: { type: string }
+        reply_to: { type: array, items: { type: string, format: email } }
+        headers: { type: object, additionalProperties: { type: string } }
+        metadata: { type: object, additionalProperties: { type: string } }
+        tags: { type: array, items: { type: object } }
+        attachments: { type: array, items: { type: object } }
         scheduled_at: { type: string, format: date-time }
     EmailResponse:
       type: object

@@ -10,6 +10,8 @@ interface Domain {
   spf_status: string;
   mx_status: string;
   dkim_status: string;
+  dmarc_status: string;
+  ses_verification_status: string;
   created_at: string;
 }
 
@@ -161,6 +163,12 @@ export default function DomainsPage() {
                 DKIM
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                SES
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                DMARC
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Actions
               </th>
             </tr>
@@ -188,6 +196,12 @@ export default function DomainsPage() {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {domain.dkim_status}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  {domain.ses_verification_status}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  {domain.dmarc_status}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
                   {domain.status !== "verified" && <button onClick={() => verifyDomain(domain.id)} className="text-blue-600 hover:underline">Verify</button>}

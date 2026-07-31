@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
 interface Webhook {
@@ -11,12 +11,27 @@ interface Webhook {
   created_at: string;
 }
 
+interface WebhookDelivery {
+  id: string;
+  event: string;
+  status: string;
+  attempts: number;
+  last_error?: string;
+  created_at: string;
+  delivered_at?: string;
+}
+
 export default function WebhooksPage() {
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ url: "", events: "email.sent,email.failed" });
+  const [editing, setEditing] = useState<Webhook | null>(null);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [historyId, setHistoryId] = useState<string | null>(null);
+  const [deliveries, setDeliveries] = useState<Record<string, WebhookDelivery[]>>({});
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   const loadWebhooks = useCallback(async () => {
     setError("");
@@ -37,17 +52,36 @@ export default function WebhooksPage() {
   const addWebhook = async (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
+    setSaving(true);
     try {
-      await api.webhooks.create({
+      const payload = {
         url: form.url,
         events: form.events.split(",").map((value) => value.trim()).filter(Boolean),
-      });
+      };
+      if (editing) await api.webhooks.update(editing.id, payload);
+      else await api.webhooks.create(payload);
       setForm({ url: "", events: "email.sent,email.failed" });
+      setEditing(null);
       setShowForm(false);
       await loadWebhooks();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add webhook");
+    } finally {
+      setSaving(false);
     }
+  };
+
+  const editWebhook = (webhook: Webhook) => {
+    setEditing(webhook);
+    setForm({ url: webhook.url, events: webhook.events.join(",") });
+    setShowForm(true);
+  };
+
+  const toggleWebhook = async (webhook: Webhook) => {
+    setError(""); setSaving(true);
+    try { await api.webhooks.update(webhook.id, { active: !webhook.active }); await loadWebhooks(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Failed to update webhook"); }
+    finally { setSaving(false); }
   };
 
   const deleteWebhook = async (id: string) => {
@@ -59,6 +93,30 @@ export default function WebhooksPage() {
     }
   };
 
+  const testWebhook = async (id: string) => {
+    setError("");
+    setTestingId(id);
+    try {
+      await api.webhooks.test(id);
+      await loadDeliveries(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to queue webhook test");
+    } finally {
+      setTestingId(null);
+    }
+  };
+
+  const loadDeliveries = async (id: string) => {
+    setError("");
+    try {
+      const data = await api.webhooks.deliveries(id) as { data: WebhookDelivery[] };
+      setDeliveries((current) => ({ ...current, [id]: data.data || [] }));
+      setHistoryId(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load webhook deliveries");
+    }
+  };
+
   if (loading) {
     return <div className="text-center py-8">Loading...</div>;
   }
@@ -67,7 +125,7 @@ export default function WebhooksPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Webhooks</h1>
-        <button type="button" onClick={() => setShowForm((visible) => !visible)} aria-expanded={showForm} aria-controls="webhook-form" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+        <button type="button" onClick={() => { setEditing(null); setForm({ url: "", events: "email.sent,email.failed" }); setShowForm((visible) => !visible); }} aria-expanded={showForm} aria-controls="webhook-form" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
           Add Webhook
         </button>
       </div>
@@ -79,7 +137,7 @@ export default function WebhooksPage() {
           <input id="webhook-url" name="url" autoComplete="url" required type="url" placeholder="https://example.com/webhook" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
           <label htmlFor="webhook-events" className="sr-only">Webhook events</label>
           <input id="webhook-events" name="events" required placeholder="Events, comma-separated" value={form.events} onChange={(e) => setForm({ ...form, events: e.target.value })} className="w-full px-3 py-2 border rounded-md" />
-          <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded-md">Save webhook</button>
+          <button type="submit" disabled={saving} className="px-4 py-2 bg-green-600 text-white rounded-md disabled:opacity-50">{editing ? "Update webhook" : "Save webhook"}</button>
         </form>
       )}
 
@@ -103,6 +161,7 @@ export default function WebhooksPage() {
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {webhooks.map((webhook) => (
+              <Fragment key={webhook.id}>
               <tr key={webhook.id}>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {webhook.url}
@@ -122,9 +181,36 @@ export default function WebhooksPage() {
                   </span>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  <button onClick={() => deleteWebhook(webhook.id)} className="text-red-600 hover:underline">Delete</button>
+                  <button type="button" onClick={() => editWebhook(webhook)} className="text-blue-600 hover:underline">Edit</button>
+                  <button type="button" onClick={() => toggleWebhook(webhook)} disabled={saving} className="ml-3 text-gray-700 hover:underline disabled:opacity-50">{webhook.active ? "Disable" : "Enable"}</button>
+                  <button type="button" onClick={() => void testWebhook(webhook.id)} disabled={testingId === webhook.id || !webhook.active} className="ml-3 text-indigo-600 hover:underline disabled:opacity-50">{testingId === webhook.id ? "Testing..." : "Test"}</button>
+                  <button type="button" onClick={() => historyId === webhook.id ? setHistoryId(null) : void loadDeliveries(webhook.id)} className="ml-3 text-gray-700 hover:underline">{historyId === webhook.id ? "Hide history" : "History"}</button>
+                  <button type="button" onClick={() => deleteWebhook(webhook.id)} className="ml-3 text-red-600 hover:underline">Delete</button>
                 </td>
               </tr>
+              {historyId === webhook.id && (
+                <tr key={`${webhook.id}-history`}>
+                  <td colSpan={4} className="px-6 py-4 bg-gray-50">
+                    <div className="text-sm font-medium text-gray-700 mb-2">Recent deliveries</div>
+                    {(deliveries[webhook.id] || []).length === 0 ? (
+                      <div className="text-sm text-gray-500">No delivery attempts yet.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(deliveries[webhook.id] || []).map((delivery) => (
+                          <div key={delivery.id} className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                            <span className="font-medium text-gray-800">{delivery.event}</span>
+                            <span>{delivery.status}</span>
+                            <span>{delivery.attempts} attempt{delivery.attempts === 1 ? "" : "s"}</span>
+                            <span>{new Date(delivery.created_at).toLocaleString()}</span>
+                            {delivery.last_error && <span className="text-red-600">{delivery.last_error}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>

@@ -12,8 +12,10 @@ provider, DNS, TLS, backups, and a real smoke test are verified together.
   responses include baseline security headers.
 - Per-team daily recipient quotas are reserved atomically in Redis and released
   when persistence or queueing fails. A rejected quota returns HTTP 429.
-- Email `sending` records are recovered periodically while the worker is
-  running, not only during startup.
+- Email `sending` records are checked periodically while the worker is running;
+  stale unknown-outcome sends fail closed instead of being resubmitted, while
+  provider-accepted sends are persisted atomically when the repository supports
+  it.
 - Production webhook creation, updates, and delivery require HTTPS and still
   reject private or link-local targets.
 - Supabase `anon` and `authenticated` roles have no privileges on application
@@ -21,6 +23,12 @@ provider, DNS, TLS, backups, and a real smoke test are verified together.
 - Stale or cryptographically invalid SNS messages are acknowledged instead of
   being retried forever. Unroutable inbound domains remain retryable and are
   eventually moved to the SQS DLQ for operator review.
+- Bounce and complaint callbacks create team-scoped suppressions before a new
+  send is queued; provider-accepted sends are acknowledged as terminal when
+  persistence cannot be completed, preventing an automatic duplicate send.
+- Team invitations are single-use, email-bound, seven-day tokens; Stripe
+  checkout, portal sessions, webhook signature verification, and plan-specific
+  recipient limits are implemented but remain optional integrations.
 - `make backup` creates a permission-restricted custom-format PostgreSQL dump.
   Restore is deliberately gated by `CONFIRM_RESTORE=YES`.
 
@@ -45,8 +53,9 @@ AWS/Supabase/hosting accounts:
 6. A backup is stored outside the application host, a restore has been tested
    into an isolated database, and the RPO/RTO are written down.
 7. Abuse controls are reviewed: daily quota, request rate limit, API-key
-   rotation, bounce/complaint handling, and a support path. Billing is not
-   enabled by this repository and must not be implied by the plan field.
+   rotation, bounce/complaint handling, and a support path. If Stripe is
+   enabled, verify live price IDs, webhook delivery, cancellation behavior,
+   and that unpaid subscriptions fall back to the free limit.
 8. Run the end-to-end smoke test below with a verified sender and a disposable
    recipient, then confirm the SES message ID, worker status, and callback
    event if event publishing is enabled.

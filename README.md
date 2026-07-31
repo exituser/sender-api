@@ -98,7 +98,12 @@ failures release the reservation.
 | `PATCH` | `/teams/:id` | Update team |
 | `DELETE` | `/teams/:id` | Delete team |
 | `POST` | `/teams/:id/invite` | Invite member |
+| `GET` | `/teams/:id/members` | List members |
+| `PATCH` | `/teams/:id/members/:userId/role` | Change member role |
 | `DELETE` | `/teams/:id/members/:userId` | Remove member |
+| `GET` | `/teams/:id/invitations` | List invitations |
+| `DELETE` | `/teams/:id/invitations/:invitationId` | Revoke invitation |
+| `POST` | `/teams/invitations/accept` | Accept invitation token |
 
 ### Contacts
 
@@ -138,6 +143,8 @@ failures release the reservation.
 | `GET` | `/webhooks/:id` | Get webhook |
 | `PATCH` | `/webhooks/:id` | Update webhook |
 | `DELETE` | `/webhooks/:id` | Delete webhook |
+| `GET` | `/webhooks/:id/deliveries` | List delivery attempts |
+| `POST` | `/webhooks/:id/test` | Queue a test delivery |
 
 ### Inbound
 
@@ -145,6 +152,15 @@ failures release the reservation.
 |--------|----------|-------------|
 | `POST` | `/inbound/ses` | SES/SNS inbound notification endpoint; legacy direct payloads require `X-Inbound-Token` |
 | `GET` | `/inbound` | Authenticated, team-scoped inbound message list |
+| `GET` | `/inbound/:id` | Get parsed message, headers, and attachment metadata |
+
+### Billing
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/billing` | Get current plan and subscription state |
+| `POST` | `/billing/checkout` | Create a Stripe Checkout session |
+| `POST` | `/billing/portal` | Create a Stripe customer portal session |
 
 SES/SNS `Notification` payloads are verified against the AWS SNS signing
 certificate and a five-minute timestamp window. Configure
@@ -169,6 +185,12 @@ This integration is optional. When `OUTBOUND_SES_TOPIC_ARN` is empty, the SES
 event callback is not registered. When it is set, the exact topic ARN is still
 checked, so disabling the integration does not weaken verification for enabled
 callbacks.
+
+Bounce and complaint callbacks create a suppression for the affected recipient
+within the owning team. Suppressed recipients are rejected before quota
+reservation and queueing. Stripe billing is optional; when enabled, free/pro/
+scale limits are selected from the verified subscription status rather than
+from a user-controlled plan field.
 
 In production, user webhooks must use HTTPS. HTTP webhook URLs remain available
 only for local development, and private/link-local targets are rejected in all
@@ -222,22 +244,29 @@ idempotency, indexes, inbound deduplication, sending recovery timestamps, and
 durable webhook deliveries, and `004_inbound_mx` adds the SES inbound MX
 verification state. `005_public_access_hardening` removes application-table
 privileges from Supabase's `anon` and `authenticated` roles because the Go API
-is the public data boundary.
+is the public data boundary. `006_suppressions` adds team-scoped bounce and
+complaint suppression, `007_team_invitations` adds expiring single-use team
+invites, `008_ses_domain_identity` stores SES verification and DKIM records,
+and `009_billing_state` stores Stripe subscription state and plan limits.
 Apply all migrations with:
 
 ```bash
 DATABASE_URL=postgresql://supabase_admin:postgres@localhost:5432/sender_api make migrate-up
 ```
 
-The Compose database is initialized from `migrations/001_initial.up.sql`,
-`migrations/003_hardening.up.sql`, `migrations/004_inbound_mx.up.sql`, and
-`migrations/005_public_access_hardening.up.sql`; its `schema_migrations` marker
-is set to version 5. Use the migration command for
+The Compose database is initialized from migrations `001`, `003` through `009`;
+its `schema_migrations` marker is set to version 9. Use the migration command for
 an already-existing database. Compose initialization only runs for a new
 database volume. Existing installations with
 duplicate normalized domains or nullable tenant IDs must be reviewed before
 applying `003_hardening`; the migration fails rather than silently rewriting
 them.
+
+Stripe billing is optional. Set `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`, the two recurring price IDs, and success/cancel/return
+URLs to enable checkout and subscription callbacks. In production those URLs
+must use HTTPS. Without those values the API keeps the free plan and does not
+register the public Stripe callback.
 
 For a release gate and backup/restore procedure, see
 [`docs/production-readiness.md`](docs/production-readiness.md).

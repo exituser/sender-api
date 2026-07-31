@@ -22,7 +22,27 @@ export default function EmailsPage() {
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [sending, setSending] = useState(false);
-  const [form, setForm] = useState({ from: "", to: "", subject: "", text: "" });
+  const [form, setForm] = useState({ from: "", to: "", cc: "", bcc: "", replyTo: "", subject: "", text: "", html: "", headers: "", metadata: "", tags: "", scheduledAt: "" });
+  const [attachments, setAttachments] = useState<File[]>([]);
+
+  const splitAddresses = (value: string) => value.split(",").map((address) => address.trim()).filter(Boolean);
+
+  const parseKeyValues = (value: string, itemName: string) => value.split("\n").filter(Boolean).map((line) => {
+    const [key, ...parts] = line.split("=");
+    if (!key?.trim() || parts.length === 0) throw new Error(`${itemName} must use key=value, one per line`);
+    return [key.trim(), parts.join("=").trim()] as const;
+  });
+
+  const encodeAttachment = async (file: File) => {
+    if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name} exceeds the 5 MB attachment limit`);
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsDataURL(file);
+    });
+    return { filename: file.name, content: dataUrl.slice(dataUrl.indexOf(",") + 1) };
+  };
 
   const loadEmails = useCallback(async () => {
     setLoading(true);
@@ -60,13 +80,27 @@ export default function EmailsPage() {
     setSending(true);
     setError("");
     try {
+      const metadata = Object.fromEntries(parseKeyValues(form.metadata, "Metadata"));
+      const tags = parseKeyValues(form.tags, "Tags").map(([name, value]) => ({ name, value }));
+      const headers = Object.fromEntries(parseKeyValues(form.headers, "Headers"));
+      const encodedAttachments = await Promise.all(attachments.map(encodeAttachment));
       await api.emails.send({
         from: form.from,
-        to: form.to.split(",").map((address) => address.trim()).filter(Boolean),
+        to: splitAddresses(form.to),
+        cc: splitAddresses(form.cc),
+        bcc: splitAddresses(form.bcc),
+        reply_to: splitAddresses(form.replyTo),
         subject: form.subject,
         text: form.text,
+        html: form.html,
+        headers,
+        metadata,
+        tags,
+        attachments: encodedAttachments,
+        scheduled_at: form.scheduledAt ? new Date(form.scheduledAt).toISOString() : undefined,
       });
-      setForm({ from: "", to: "", subject: "", text: "" });
+      setForm({ from: "", to: "", cc: "", bcc: "", replyTo: "", subject: "", text: "", html: "", headers: "", metadata: "", tags: "", scheduledAt: "" });
+      setAttachments([]);
       setShowForm(false);
       await loadEmails();
     } catch (err) {
@@ -101,10 +135,25 @@ export default function EmailsPage() {
             <label htmlFor="email-from" className="block text-sm font-medium text-gray-700">From</label>
             <input id="email-from" name="from" autoComplete="email" spellCheck={false} required type="email" placeholder="sender@example.com" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" />
           </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div><label htmlFor="email-cc" className="block text-sm font-medium text-gray-700">CC</label><input id="email-cc" type="text" placeholder="cc@example.com" value={form.cc} onChange={(e) => setForm({ ...form, cc: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /></div>
+            <div><label htmlFor="email-bcc" className="block text-sm font-medium text-gray-700">BCC</label><input id="email-bcc" type="text" placeholder="bcc@example.com" value={form.bcc} onChange={(e) => setForm({ ...form, bcc: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /></div>
+          </div>
+          <div><label htmlFor="email-reply-to" className="block text-sm font-medium text-gray-700">Reply-To</label><input id="email-reply-to" type="text" placeholder="reply@example.com" value={form.replyTo} onChange={(e) => setForm({ ...form, replyTo: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /></div>
           <div>
             <label htmlFor="email-to" className="block text-sm font-medium text-gray-700">To</label>
             <input id="email-to" name="to" autoComplete="email" spellCheck={false} required type="email" multiple aria-describedby="email-to-hint" placeholder="recipient@example.com, another@example.com" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" />
             <p id="email-to-hint" className="mt-1 text-sm text-gray-500">Separate multiple recipients with commas.</p>
+          </div>
+          <div><label htmlFor="email-html" className="block text-sm font-medium text-gray-700">HTML (optional)</label><textarea id="email-html" value={form.html} onChange={(e) => setForm({ ...form, html: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md min-h-32 font-mono text-sm" /></div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div><label htmlFor="email-headers" className="block text-sm font-medium text-gray-700">Custom headers</label><textarea id="email-headers" placeholder="X-Campaign=welcome" value={form.headers} onChange={(e) => setForm({ ...form, headers: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /><p className="mt-1 text-xs text-gray-500">One header=value pair per line.</p></div>
+            <div><label htmlFor="email-metadata" className="block text-sm font-medium text-gray-700">Metadata</label><textarea id="email-metadata" placeholder="campaign=welcome" value={form.metadata} onChange={(e) => setForm({ ...form, metadata: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /><p className="mt-1 text-xs text-gray-500">One key=value pair per line.</p></div>
+            <div><label htmlFor="email-tags" className="block text-sm font-medium text-gray-700">Tags</label><textarea id="email-tags" placeholder="category=transactional" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /><p className="mt-1 text-xs text-gray-500">One name=value pair per line.</p></div>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div><label htmlFor="email-scheduled-at" className="block text-sm font-medium text-gray-700">Schedule for (optional)</label><input id="email-scheduled-at" type="datetime-local" value={form.scheduledAt} onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /></div>
+            <div><label htmlFor="email-attachments" className="block text-sm font-medium text-gray-700">Attachments</label><input id="email-attachments" type="file" multiple onChange={(e) => setAttachments(Array.from(e.target.files ?? []))} className="mt-1 w-full px-3 py-2 border rounded-md" /><p className="mt-1 text-xs text-gray-500">Up to 5 MB per file; payload stays within the API’s 10 MB limit.</p></div>
           </div>
           <div>
             <label htmlFor="email-subject" className="block text-sm font-medium text-gray-700">Subject</label>

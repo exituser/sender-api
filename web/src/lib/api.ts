@@ -24,7 +24,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     authHeaders["Authorization"] = `Bearer ${session.access_token}`;
   }
 
-  const requestHeaders = {
+  const requestHeaders: Record<string, string> = {
     ...authHeaders,
     ...headers,
   };
@@ -35,13 +35,15 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     }
   }
 
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  if (!isFormData) {
+    requestHeaders["Content-Type"] = "application/json";
+  }
+
   const res = await fetch(`${API_BASE_URL}/api/v1${path}`, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-      ...requestHeaders,
-    },
-    body: body ? JSON.stringify(body) : undefined,
+    headers: requestHeaders,
+    body: body ? (isFormData ? body as FormData : JSON.stringify(body)) : undefined,
   });
 
   if (!res.ok) {
@@ -164,6 +166,15 @@ export const api = {
     members: (id: string) => request(`/teams/${id}/members`),
     invite: (id: string, data: unknown) =>
       request(`/teams/${id}/invite`, { method: "POST", body: data }),
+    invitations: (id: string) => request(`/teams/${id}/invitations`),
+    revokeInvitation: (id: string, invitationId: string) =>
+      request(`/teams/${id}/invitations/${invitationId}`, { method: "DELETE" }),
+    acceptInvitation: (data: unknown) =>
+      request("/teams/invitations/accept", { method: "POST", body: data }),
+    removeMember: (id: string, userId: string) =>
+      request(`/teams/${id}/members/${userId}`, { method: "DELETE" }),
+    updateMemberRole: (id: string, userId: string, role: string) =>
+      request(`/teams/${id}/members/${userId}/role`, { method: "PATCH", body: { role } }),
   },
   contacts: {
     list: (limit = 50, offset = 0) =>
@@ -175,7 +186,7 @@ export const api = {
       request(`/contacts/${id}`, { method: "PATCH", body: data }),
     delete: (id: string) =>
       request(`/contacts/${id}`, { method: "DELETE" }),
-    import: (data: unknown) =>
+    import: (data: FormData) =>
       request("/contacts/import", { method: "POST", body: data }),
   },
   domains: {
@@ -204,9 +215,19 @@ export const api = {
       request(`/webhooks/${id}`, { method: "PATCH", body: data }),
     delete: (id: string) =>
       request(`/webhooks/${id}`, { method: "DELETE" }),
+    deliveries: (id: string, limit = 50) =>
+      request(`/webhooks/${id}/deliveries?limit=${limit}`),
+    test: (id: string) =>
+      request(`/webhooks/${id}/test`, { method: "POST" }),
   },
   inbound: {
     list: (limit = 50, offset = 0) =>
       request(`/inbound?limit=${limit}&offset=${offset}`),
+    get: (id: string) => request(`/inbound/${id}`),
+  },
+  billing: {
+    summary: () => request("/billing"),
+    checkout: (plan: string) => request("/billing/checkout", { method: "POST", body: { plan } }),
+    portal: () => request("/billing/portal", { method: "POST" }),
   },
 };

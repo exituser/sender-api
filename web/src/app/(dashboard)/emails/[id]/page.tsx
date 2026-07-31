@@ -16,6 +16,10 @@ interface Email {
   status: string;
   tags: { name: string; value: string }[];
   metadata: Record<string, string>;
+  headers: Record<string, string>;
+  reply_to: string[];
+  attachments: { filename: string }[];
+  scheduled_at: string | null;
   created_at: string;
   sent_at: string | null;
 }
@@ -33,6 +37,8 @@ export default function EmailDetailPage() {
   const [email, setEmail] = useState<Email | null>(null);
   const [events, setEvents] = useState<EmailEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [cancelling, setCancelling] = useState(false);
   const emailID = params.id as string;
 
   const loadEmail = useCallback(async () => {
@@ -62,6 +68,20 @@ export default function EmailDetailPage() {
     }
   };
 
+  const cancelScheduledEmail = async () => {
+    if (!email || !window.confirm("Cancel this scheduled email?")) return;
+    setCancelling(true);
+    setError("");
+    try {
+      await api.emails.cancel(email.id);
+      await loadEmail();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel scheduled email");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   if (loading) return <div className="text-center py-8">Loading...</div>;
   if (!email) return <div className="text-center py-8">Email not found</div>;
 
@@ -75,7 +95,10 @@ export default function EmailDetailPage() {
         <span className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(email.status)}`}>
           {email.status}
         </span>
+        {email.status === "queued" && email.scheduled_at && <button type="button" onClick={cancelScheduledEmail} disabled={cancelling} className="ml-auto px-3 py-2 text-sm text-red-700 border border-red-300 rounded-md hover:bg-red-50 disabled:opacity-50">{cancelling ? "Cancelling..." : "Cancel scheduled email"}</button>}
       </div>
+
+      {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
 
       <div className="bg-white shadow rounded-lg p-6 space-y-4">
         <div className="grid grid-cols-2 gap-4">
@@ -95,6 +118,7 @@ export default function EmailDetailPage() {
             <span className="text-sm font-medium text-gray-500">Created</span>
             <p className="text-gray-900">{new Date(email.created_at).toLocaleString()}</p>
           </div>
+          {email.scheduled_at && <div><span className="text-sm font-medium text-gray-500">Scheduled</span><p className="text-gray-900">{new Date(email.scheduled_at).toLocaleString()}</p></div>}
         </div>
 
         {email.cc?.length > 0 && (
@@ -103,6 +127,12 @@ export default function EmailDetailPage() {
             <p className="text-gray-900">{email.cc.join(", ")}</p>
           </div>
         )}
+        {email.bcc?.length > 0 && <div><span className="text-sm font-medium text-gray-500">BCC</span><p className="text-gray-900">{email.bcc.join(", ")}</p></div>}
+        {email.reply_to?.length > 0 && <div><span className="text-sm font-medium text-gray-500">Reply-To</span><p className="text-gray-900">{email.reply_to.join(", ")}</p></div>}
+        {email.tags?.length > 0 && <div><span className="text-sm font-medium text-gray-500">Tags</span><p className="text-gray-900">{email.tags.map((tag) => `${tag.name}=${tag.value}`).join(", ")}</p></div>}
+        {Object.keys(email.metadata ?? {}).length > 0 && <div><span className="text-sm font-medium text-gray-500">Metadata</span><pre className="mt-1 text-sm whitespace-pre-wrap">{JSON.stringify(email.metadata, null, 2)}</pre></div>}
+        {Object.keys(email.headers ?? {}).length > 0 && <div><span className="text-sm font-medium text-gray-500">Headers</span><pre className="mt-1 text-sm whitespace-pre-wrap">{JSON.stringify(email.headers, null, 2)}</pre></div>}
+        {email.attachments?.length > 0 && <div><span className="text-sm font-medium text-gray-500">Attachments</span><p className="text-gray-900">{email.attachments.map((attachment) => attachment.filename).join(", ")}</p></div>}
 
         {email.html && (
           <div>
