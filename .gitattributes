@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.go text diff=golang
+*.md text
+*.sql text
+*.json text
+*.yml text
+*.yaml text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
