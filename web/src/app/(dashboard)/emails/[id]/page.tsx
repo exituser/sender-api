@@ -80,33 +80,33 @@ export default function EmailDetailPage() {
       <div className="bg-white shadow rounded-lg p-6 space-y-4">
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="text-sm font-medium text-gray-500">From</label>
+            <span className="text-sm font-medium text-gray-500">From</span>
             <p className="text-gray-900">{email.from}</p>
           </div>
           <div>
-            <label className="text-sm font-medium text-gray-500">To</label>
+            <span className="text-sm font-medium text-gray-500">To</span>
             <p className="text-gray-900">{email.to.join(", ")}</p>
           </div>
           <div>
-            <label className="text-sm font-medium text-gray-500">Subject</label>
+            <span className="text-sm font-medium text-gray-500">Subject</span>
             <p className="text-gray-900">{email.subject}</p>
           </div>
           <div>
-            <label className="text-sm font-medium text-gray-500">Created</label>
+            <span className="text-sm font-medium text-gray-500">Created</span>
             <p className="text-gray-900">{new Date(email.created_at).toLocaleString()}</p>
           </div>
         </div>
 
         {email.cc?.length > 0 && (
           <div>
-            <label className="text-sm font-medium text-gray-500">CC</label>
+            <span className="text-sm font-medium text-gray-500">CC</span>
             <p className="text-gray-900">{email.cc.join(", ")}</p>
           </div>
         )}
 
         {email.html && (
           <div>
-            <label className="text-sm font-medium text-gray-500">HTML Preview</label>
+            <span className="text-sm font-medium text-gray-500">HTML Preview</span>
             <iframe
               title="Email HTML preview"
               sandbox=""
@@ -118,7 +118,7 @@ export default function EmailDetailPage() {
 
         {email.text && (
           <div>
-            <label className="text-sm font-medium text-gray-500">Text</label>
+            <span className="text-sm font-medium text-gray-500">Text</span>
             <pre className="mt-2 border rounded p-4 bg-gray-50 text-sm whitespace-pre-wrap">{email.text}</pre>
           </div>
         )}

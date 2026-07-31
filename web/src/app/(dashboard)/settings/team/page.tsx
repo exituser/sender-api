@@ -61,10 +61,11 @@ export default function SettingsPage() {
         <h2 className="text-lg font-medium mb-4">Team Information</h2>
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700">
+            <label htmlFor="team-info-name" className="block text-sm font-medium text-gray-700">
               Team Name
             </label>
             <input
+              id="team-info-name"
               type="text"
               value={team?.name || ""}
               className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
@@ -72,9 +73,9 @@ export default function SettingsPage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700">
+            <span className="block text-sm font-medium text-gray-700">
               Plan
-            </label>
+            </span>
             <p className="mt-1 text-sm text-gray-900">{team?.plan || "free"}</p>
           </div>
         </div>

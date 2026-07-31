@@ -184,6 +184,9 @@ them.
 
 The backend and frontend checks used by CI can be run locally:
 
+The frontend `npm run lint` command uses Oxlint with TypeScript, React,
+Next.js, JSX accessibility, and import checks enabled.
+
 ```bash
 make test
 go vet ./cmd/... ./internal/... ./pkg/...

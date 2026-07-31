@@ -76,9 +76,9 @@ export default function ContactsPage() {
           <label htmlFor="contact-email" className="sr-only">Email</label>
           <input id="contact-email" name="email" autoComplete="email" required type="email" placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="px-3 py-2 border rounded-md" />
           <label htmlFor="contact-first-name" className="sr-only">First name</label>
-          <input id="contact-first-name" name="first_name" autoComplete="given-name" placeholder="First name" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} className="px-3 py-2 border rounded-md" />
+          <input id="contact-first-name" name="first_name" autoComplete="off" placeholder="First name" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} className="px-3 py-2 border rounded-md" />
           <label htmlFor="contact-last-name" className="sr-only">Last name</label>
-          <input id="contact-last-name" name="last_name" autoComplete="family-name" placeholder="Last name" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} className="px-3 py-2 border rounded-md" />
+          <input id="contact-last-name" name="last_name" autoComplete="off" placeholder="Last name" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} className="px-3 py-2 border rounded-md" />
           <button disabled={saving} aria-busy={saving} type="submit" className="md:col-span-3 px-4 py-2 bg-green-600 text-white rounded-md disabled:opacity-50">{saving ? "Saving..." : "Save contact"}</button>
         </form>
       )}

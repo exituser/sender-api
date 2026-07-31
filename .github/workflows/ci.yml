@@ -63,7 +63,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
+      - name: Oxlint
         run: npm run lint
 
       - name: Type check

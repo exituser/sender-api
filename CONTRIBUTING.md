@@ -26,6 +26,7 @@ easier to review and safer to deploy.
 
    cd web
    npm ci
+   # Runs Oxlint with the repository's frontend plugins.
    npm run lint
    npx tsc --noEmit
    npm run build
