@@ -25,9 +25,10 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
   const pathname = request.nextUrl.pathname;
+  const isPublicPage = pathname === "/" || pathname === "/privacy" || pathname === "/terms" || pathname === "/subprocessors" || pathname === "/refunds" || pathname === "/docs" || pathname === "/pricing" || pathname === "/brand-mark.svg" || pathname === "/icon.svg";
   const isAuthPage = pathname === "/login" || pathname === "/signup" || pathname === "/callback" || pathname === "/forgot-password" || pathname === "/reset-password";
 
-  if (!user && !isAuthPage) {
+  if (!user && !isAuthPage && !isPublicPage) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
   if (user && (pathname === "/login" || pathname === "/signup")) {
@@ -38,5 +39,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|brand-mark.svg|icon.svg|healthz).*)"],
 };

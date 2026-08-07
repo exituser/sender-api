@@ -41,13 +41,23 @@ cd web && npm ci && npm run dev
 ### Docker
 
 ```bash
-# Build and run everything
+# Production Compose requires explicit production values.
+cp .env.production.example .env
 docker compose up
 
 # Or build individually
 docker build -f docker/Dockerfile.api -t sender-api .
 docker build -f docker/Dockerfile.worker -t sender-worker .
 ```
+
+The production Compose file keeps host-run `DATABASE_URL` and `REDIS_URL`
+separate from container service addresses. Set `COMPOSE_DATABASE_URL` and
+`COMPOSE_REDIS_URL` explicitly when using managed production services; leave
+them empty for the local `db` and `redis` services.
+
+For local development use `docker-compose.dev.yml`; the main Compose file is
+fixed to `ENV=production` and fails closed when its public URLs or metrics token
+are missing.
 
 ## API Endpoints
 
@@ -76,6 +86,11 @@ original email ID without queuing a second message. The `From` domain must be
 verified and owned by the active team. Each team also has a configurable
 `DAILY_RECIPIENT_LIMIT`; exhausted quotas return `429` and queue/database
 failures release the reservation.
+
+`POST /emails/batch` requires an `Idempotency-Key` header. The API derives a
+stable key for each item, so retrying a partially completed batch does not queue
+already accepted items again. A partial result returns HTTP `207` with accepted
+item IDs and the failed item error.
 
 ### Emails
 
@@ -169,7 +184,8 @@ certificate and a five-minute timestamp window. Configure
 raw messages from S3, and acknowledges SQS only after a successful database
 write. Direct raw-payload calls are retained for local or legacy integrations
 and require `X-Inbound-Token`; they are not a substitute for SNS verification
-in production.
+in production. S3-backed notifications must use the SQS worker path and are
+rejected by the direct HTTP endpoint instead of being acknowledged as empty.
 
 The inbound adapter is optional. Leave `INBOUND_SQS_QUEUE_URL` and
 `INBOUND_SNS_TOPIC_ARN` empty for an outbound-only deployment; the API does not
@@ -194,7 +210,8 @@ from a user-controlled plan field.
 
 In production, user webhooks must use HTTPS. HTTP webhook URLs remain available
 only for local development, and private/link-local targets are rejected in all
-environments.
+environments. Delivery is at-least-once: consumers must deduplicate using
+`X-Webhook-Delivery-ID` or the `id` field in the signed payload.
 
 The web app includes Supabase password recovery at `/forgot-password`. Add the
 public `/callback` and `/reset-password` URLs to the Supabase redirect allowlist
@@ -248,6 +265,8 @@ is the public data boundary. `006_suppressions` adds team-scoped bounce and
 complaint suppression, `007_team_invitations` adds expiring single-use team
 invites, `008_ses_domain_identity` stores SES verification and DKIM records,
 and `009_billing_state` stores Stripe subscription state and plan limits.
+`010_billing_event_ordering` adds Stripe event deduplication and monotonic
+state application; unknown Stripe prices fail closed to the free plan.
 Apply all migrations with:
 
 ```bash

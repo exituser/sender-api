@@ -13,6 +13,7 @@ const nextConfig = {
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
           { key: 'Permissions-Policy', value: 'camera=(), geolocation=(), microphone=()' },
           { key: 'X-DNS-Prefetch-Control', value: 'off' },
+          { key: 'Cache-Control', value: 'no-transform' },
         ],
       },
     ];

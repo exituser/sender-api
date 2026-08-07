@@ -37,6 +37,7 @@ var ErrEmailDeliveryFailed = errors.New("email delivery failed")
 var ErrEmailDeliveryRetryable = errors.New("email delivery should be retried")
 var ErrQueueUnavailable = errors.New("queue unavailable")
 var ErrIdempotencyConflict = errors.New("idempotency key was already used with a different request")
+var ErrBatchIdempotencyKeyRequired = errors.New("Idempotency-Key is required for batch sends")
 var ErrDailyRecipientLimit = errors.New("daily recipient limit exceeded")
 var ErrUsageUnavailable = errors.New("usage limiter unavailable")
 var ErrRecipientSuppressed = errors.New("recipient is suppressed")
@@ -238,6 +239,7 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 	}
 	recipientUnits := len(req.To) + len(req.CC) + len(req.BCC)
 	quotaReserved := false
+	reservationAt := time.Now().UTC()
 	if s.usageLimiter != nil {
 		limit, limitErr := s.recipientLimit(ctx, teamID)
 		if limitErr != nil {
@@ -257,7 +259,7 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 	committed := false
 	defer func() {
 		if quotaReserved && !committed {
-			if releaseErr := s.usageLimiter.Release(ctx, teamID, recipientUnits); releaseErr != nil {
+			if releaseErr := s.usageLimiter.Release(ctx, teamID, recipientUnits, reservationAt); releaseErr != nil {
 				if s.logger != nil {
 					s.logger.Error("failed to release daily email quota", "team_id", teamID, "error", releaseErr)
 				}
@@ -557,14 +559,21 @@ func (s *EmailService) dispatchWebhooks(ctx context.Context, teamID, eventID uui
 	}
 }
 
-func (s *EmailService) BatchSend(ctx context.Context, teamID uuid.UUID, reqs []*domain.SendEmailRequest) ([]*domain.EmailResponse, error) {
+func (s *EmailService) BatchSend(ctx context.Context, teamID uuid.UUID, reqs []*domain.SendEmailRequest, batchKey string) ([]*domain.EmailResponse, error) {
 	if len(reqs) > 100 {
 		return nil, fmt.Errorf("maximum 100 emails per batch")
 	}
+	batchKey = strings.TrimSpace(batchKey)
+	if batchKey == "" {
+		return nil, ErrBatchIdempotencyKeyRequired
+	}
+	if len(batchKey) > 255 || strings.ContainsAny(batchKey, "\r\n") {
+		return nil, fmt.Errorf("invalid idempotency key")
+	}
 
 	var responses []*domain.EmailResponse
-	for _, req := range reqs {
-		resp, err := s.Send(ctx, teamID, req)
+	for index, req := range reqs {
+		resp, _, err := s.SendWithIdempotency(ctx, teamID, req, batchItemIdempotencyKey(batchKey, index))
 		if err != nil {
 			if req == nil {
 				return responses, fmt.Errorf("failed to send email: %w", err)
@@ -574,4 +583,13 @@ func (s *EmailService) BatchSend(ctx context.Context, teamID uuid.UUID, reqs []*
 		responses = append(responses, resp)
 	}
 	return responses, nil
+}
+
+func batchItemIdempotencyKey(batchKey string, index int) string {
+	key := fmt.Sprintf("%s:%d", batchKey, index)
+	if len(key) <= 255 {
+		return key
+	}
+	hash := sha256.Sum256([]byte(key))
+	return "batch:" + hex.EncodeToString(hash[:])
 }

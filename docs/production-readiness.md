@@ -11,24 +11,32 @@ provider, DNS, TLS, backups, and a real smoke test are verified together.
 - `/metrics` is protected by `METRICS_TOKEN` when configured; API and web
   responses include baseline security headers.
 - Per-team daily recipient quotas are reserved atomically in Redis and released
-  when persistence or queueing fails. A rejected quota returns HTTP 429.
+  when persistence or queueing fails using the original reservation date. A
+  rejected quota returns HTTP 429.
 - Email `sending` records are checked periodically while the worker is running;
   stale unknown-outcome sends fail closed instead of being resubmitted, while
   provider-accepted sends are persisted atomically when the repository supports
   it.
-- Production webhook creation, updates, and delivery require HTTPS and still
-  reject private or link-local targets.
+- Production webhook creation, updates, and delivery require HTTPS and reject
+  private, special-use, and link-local targets.
 - Supabase `anon` and `authenticated` roles have no privileges on application
   tables; the Go API is the public data boundary.
-- Stale or cryptographically invalid SNS messages are acknowledged instead of
-  being retried forever. Unroutable inbound domains remain retryable and are
-  eventually moved to the SQS DLQ for operator review.
+- Cryptographically invalid or future-dated SNS messages are acknowledged
+  instead of being retried forever. Signed notifications delayed by the
+  asynchronous SQS transport are accepted and deduplicated by provider/message
+  IDs. Unroutable inbound domains remain retryable and are eventually moved to
+  the SQS DLQ for operator review.
 - Bounce and complaint callbacks create team-scoped suppressions before a new
   send is queued; provider-accepted sends are acknowledged as terminal when
   persistence cannot be completed, preventing an automatic duplicate send.
 - Team invitations are single-use, email-bound, seven-day tokens; Stripe
   checkout, portal sessions, webhook signature verification, and plan-specific
-  recipient limits are implemented but remain optional integrations.
+  recipient limits are implemented but remain optional integrations. Stripe
+  events are deduplicated and stale events cannot overwrite newer billing state;
+  unknown prices fail closed to the free plan.
+- Batch sends require an idempotency key and return HTTP 207 with accepted item
+  IDs when a later item fails. Webhook consumers must deduplicate delivery IDs
+  because delivery is at-least-once.
 - `make backup` creates a permission-restricted custom-format PostgreSQL dump.
   Restore is deliberately gated by `CONFIRM_RESTORE=YES`.
 
@@ -45,6 +53,9 @@ AWS/Supabase/hosting accounts:
    metrics token and daily limit. If inbound or outbound SNS integrations are
    enabled, their exact queue/topic/bucket/configuration-set values must also
    be present and verified.
+   For Compose, use `COMPOSE_DATABASE_URL` and `COMPOSE_REDIS_URL`; the
+   host-run `DATABASE_URL` and `REDIS_URL` values must not be copied into
+   containers when they point at `localhost`.
 4. The sender domain is verified in SES and DNS. Inbound domains must also have
    the SES MX record and an active receipt rule set. Confirm the recipient before
    activating mail flow.
@@ -63,6 +74,13 @@ AWS/Supabase/hosting accounts:
 ## Safe local checks
 
 ```bash
+CORS_ORIGINS=https://app.example.com \
+SUPABASE_URL=https://project.supabase.co \
+METRICS_TOKEN=local-check-token \
+POSTGRES_PASSWORD=local-check-password \
+NEXT_PUBLIC_API_URL=https://api.example.com \
+NEXT_PUBLIC_SUPABASE_URL=https://project.supabase.co \
+NEXT_PUBLIC_SUPABASE_ANON_KEY=local-check-anon \
 docker compose config --quiet
 docker compose -f docker-compose.dev.yml config --quiet
 go test ./cmd/... ./internal/... ./pkg/...
@@ -88,6 +106,8 @@ explicit, reviewed operation.
 - `inbound recipient domain is not configured: example.com` means the domain is
   absent, pending, or not MX-verified for a team. The message is not routed;
   check the domain record and the active SES receipt rule.
-- `stale SNS notification` means the message sat in SQS beyond the five-minute
-  signature window. It is acknowledged as non-retryable; the original raw
-  message should remain available in S3 when the receipt rule stored it.
+- `stale SNS notification` means the signed notification has a future-dated
+  timestamp or arrived through a synchronous callback outside its freshness
+  window. Queue-delivered notifications use the asynchronous verifier and are
+  not discarded only because they waited in SQS; the original raw message
+  should remain available in S3 when the receipt rule stored it.

@@ -17,7 +17,7 @@ import (
 
 func TestVerifyWebhookAcceptsValidSignature(t *testing.T) {
 	secret := "whsec_test"
-	payload := []byte(`{"id":"evt_test","type":"customer.subscription.updated","data":{"object":{}}}`)
+	payload := []byte(`{"id":"evt_test","type":"customer.subscription.updated","created":1735689600,"data":{"object":{}}}`)
 	now := time.Unix(1_735_689_600, 0).UTC()
 	signature := stripeTestSignature(secret, payload, now)
 
@@ -26,7 +26,7 @@ func TestVerifyWebhookAcceptsValidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyWebhook() error = %v", err)
 	}
-	if event.ID != "evt_test" || event.Type != "customer.subscription.updated" {
+	if event.ID != "evt_test" || event.Type != "customer.subscription.updated" || event.Created != 1735689600 {
 		t.Fatalf("unexpected event: %+v", event)
 	}
 }

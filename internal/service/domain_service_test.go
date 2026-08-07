@@ -1,25 +1,12 @@
 package service
 
 import (
-	"context"
 	"net"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/sender-api/sender-api/internal/domain"
 )
-
-type sesIdentityProviderStub struct {
-	identity *domain.SESIdentity
-}
-
-func (s *sesIdentityProviderStub) Create(context.Context, string) (*domain.SESIdentity, error) {
-	return s.identity, nil
-}
-
-func (s *sesIdentityProviderStub) Get(context.Context, string) (*domain.SESIdentity, error) {
-	return s.identity, nil
-}
 
 func TestApplySESIdentityBuildsAllDKIMRecords(t *testing.T) {
 	service := NewDomainService(nil, nil, "eu-west-1")

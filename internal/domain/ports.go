@@ -166,5 +166,5 @@ type EmailQueue interface {
 
 type UsageLimiter interface {
 	Reserve(ctx context.Context, teamID uuid.UUID, units, limit int) (bool, error)
-	Release(ctx context.Context, teamID uuid.UUID, units int) error
+	Release(ctx context.Context, teamID uuid.UUID, units int, reservedAt time.Time) error
 }

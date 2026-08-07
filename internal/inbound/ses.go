@@ -19,6 +19,9 @@ type SNSNotification struct {
 	SigningCertURL   string `json:"SigningCertURL"`
 	Signature        string `json:"Signature"`
 	SignatureVersion string `json:"SignatureVersion"`
+	SubscribeURL     string `json:"SubscribeURL"`
+	UnsubscribeURL   string `json:"UnsubscribeURL"`
+	Token            string `json:"Token"`
 }
 
 type SESNotification struct {
@@ -68,7 +71,7 @@ func DecodeAndVerifySNS(ctx context.Context, body []byte, region, expectedTopicA
 	if notification.Type != "Notification" || notification.Message == "" {
 		return nil, fmt.Errorf("not an SNS notification")
 	}
-	if err := sns.VerifyNotification(ctx, sns.Notification{
+	if err := sns.VerifyNotificationForQueue(ctx, sns.Notification{
 		Type:             notification.Type,
 		Message:          notification.Message,
 		MessageID:        notification.MessageID,
@@ -78,6 +81,8 @@ func DecodeAndVerifySNS(ctx context.Context, body []byte, region, expectedTopicA
 		SigningCertURL:   notification.SigningCertURL,
 		Signature:        notification.Signature,
 		SignatureVersion: notification.SignatureVersion,
+		SubscribeURL:     notification.SubscribeURL,
+		Token:            notification.Token,
 	}, region, time.Now().UTC()); err != nil {
 		return nil, err
 	}

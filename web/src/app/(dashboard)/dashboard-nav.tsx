@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { clearActiveTeamId } from "@/lib/api";
 import { createClient } from "@/lib/supabase/client";
+import { BrandMark } from "@/components/brand-mark";
 
 const navigation = [
   { name: "Emails", href: "/emails" },
@@ -31,8 +32,9 @@ export function DashboardNav() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-16">
           <div className="flex">
-            <Link href="/emails" className="flex items-center px-4 text-xl font-bold">
-              Sender API
+            <Link href="/emails" className="dashboard-brand flex items-center gap-2 px-4 text-xl font-bold">
+              <BrandMark size={30} />
+              <span>Sender API</span>
             </Link>
             <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
               {navigation.map((item) => (

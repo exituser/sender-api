@@ -1,9 +1,12 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sender-api/sender-api/internal/auth"
 )
 
 func TestSecurityHeadersAreSet(t *testing.T) {
@@ -22,6 +25,17 @@ func TestSecurityHeadersAreSet(t *testing.T) {
 		if got := response.Header().Get(header); got != expected {
 			t.Fatalf("expected %s=%q, got %q", header, expected, got)
 		}
+	}
+}
+
+func TestRateLimitScopesDoNotShareAnonymousBucket(t *testing.T) {
+	ctx := context.Background()
+	if got := getRateLimitKeyForScope(ctx, "stripe"); got == getRateLimitKeyForScope(ctx, "ses") {
+		t.Fatalf("provider callback scopes share rate-limit key: %q", got)
+	}
+	teamCtx := context.WithValue(ctx, auth.ClaimsKey, &auth.Claims{TeamID: "team-1"})
+	if got := getRateLimitKeyForScope(teamCtx, "api"); got != "ratelimit:api:team:team-1" {
+		t.Fatalf("unexpected team rate-limit key: %q", got)
 	}
 }
 

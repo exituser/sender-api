@@ -83,7 +83,15 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Validate production Compose configuration
-        run: cp .env.example .env && docker compose config --quiet
+        run: >-
+          CORS_ORIGINS=https://app.example.com
+          SUPABASE_URL=https://project.supabase.co
+          METRICS_TOKEN=ci-metrics-token
+          POSTGRES_PASSWORD=ci-postgres-password
+          NEXT_PUBLIC_API_URL=https://api.example.com
+          NEXT_PUBLIC_SUPABASE_URL=https://project.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-anon-key
+          docker compose config --quiet
 
       - name: Validate development Compose configuration
         run: docker compose -f docker-compose.dev.yml config --quiet

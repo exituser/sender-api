@@ -51,6 +51,23 @@ func TestValidateProductionRequiresCoreOperationalSettings(t *testing.T) {
 	}
 }
 
+func TestValidateProductionAllowsComposeServices(t *testing.T) {
+	cfg := &Config{
+		Env:                 "production",
+		CORSOrigins:         "https://app.example.com",
+		DatabaseURL:         "postgresql://supabase_admin:secret@db:5432/sender_api",
+		RedisURL:            "redis:6379",
+		SupabaseURL:         "https://project.supabase.co",
+		AWSRegion:           "eu-west-1",
+		MetricsToken:        "metrics-secret",
+		DailyRecipientLimit: 1000,
+		Debug:               false,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected Compose production config to validate: %v", err)
+	}
+}
+
 func TestValidateRequiresSESConfigSetForOutboundEvents(t *testing.T) {
 	cfg := &Config{
 		CORSOrigins:         "http://localhost:3000",
@@ -122,5 +139,46 @@ func TestValidateProductionRejectsHTTPStripeReturnURL(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected production HTTP Stripe return URL to be rejected")
+	}
+}
+
+func TestValidateProductionRejectsRemoteDatabaseWithoutTLS(t *testing.T) {
+	cfg := &Config{
+		Env:                 "production",
+		CORSOrigins:         "https://app.example.com",
+		DatabaseURL:         "postgresql://db.example.com/sender_api",
+		RedisURL:            "rediss://redis.example.com:6380",
+		SupabaseURL:         "https://project.supabase.co",
+		AWSRegion:           "eu-west-1",
+		MetricsToken:        "metrics-secret",
+		DailyRecipientLimit: 1000,
+		Debug:               false,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected remote production database without TLS to be rejected")
+	}
+}
+
+func TestValidateProductionRejectsRemoteRedisWithoutTLS(t *testing.T) {
+	cfg := &Config{
+		Env:                 "production",
+		CORSOrigins:         "https://app.example.com",
+		DatabaseURL:         "postgresql://db.example.com/sender_api?sslmode=require",
+		RedisURL:            "redis://redis.example.com:6379",
+		SupabaseURL:         "https://project.supabase.co",
+		AWSRegion:           "eu-west-1",
+		MetricsToken:        "metrics-secret",
+		DailyRecipientLimit: 1000,
+		Debug:               false,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected remote production Redis without TLS to be rejected")
+	}
+}
+
+func TestValidateRejectsInvalidInboundVisibilityTimeout(t *testing.T) {
+	cfg := &Config{CORSOrigins: "http://localhost:3000", InboundVisibilityTimeoutSeconds: 43201}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid inbound visibility timeout to be rejected")
 	}
 }

@@ -48,7 +48,9 @@ func TestIsValidHTTPSURLRequiresHTTPS(t *testing.T) {
 }
 
 func TestIsPrivateIPRejectsUnroutableIPv4Range(t *testing.T) {
-	if !IsPrivateIP(net.ParseIP("0.1.2.3")) {
-		t.Fatal("expected 0.0.0.0/8 to be rejected")
+	for _, raw := range []string{"0.1.2.3", "100.64.0.1", "198.18.0.1", "192.0.2.1", "2001:db8::1", "fc00::1"} {
+		if !IsPrivateIP(net.ParseIP(raw)) {
+			t.Fatalf("expected special-use address %s to be rejected", raw)
+		}
 	}
 }

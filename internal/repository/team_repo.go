@@ -227,6 +227,47 @@ func (r *TeamRepo) UpdateBilling(ctx context.Context, teamID uuid.UUID, customer
 	return err
 }
 
+func (r *TeamRepo) ApplyBillingEvent(ctx context.Context, eventID string, eventCreated int64, eventType string, teamID uuid.UUID, customerID, subscriptionID *string, plan domain.Plan, status string, currentPeriodEnd *time.Time, cancelAtPeriodEnd bool) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	insertTag, err := tx.Exec(ctx, `
+		INSERT INTO stripe_events (event_id, event_type, event_created)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (event_id) DO NOTHING
+	`, eventID, eventType, eventCreated)
+	if err != nil {
+		return err
+	}
+	if insertTag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE teams
+		SET stripe_customer_id = $1,
+			stripe_subscription_id = $2,
+			plan = $3,
+			billing_status = $4,
+			current_period_end = $5,
+			cancel_at_period_end = $6,
+			billing_event_created = $8,
+			billing_event_id = $9,
+			updated_at = NOW()
+		WHERE id = $7
+		  AND (
+			billing_event_created < $8
+			OR (billing_event_created = $8 AND billing_event_id <= $9)
+		  )
+	`, customerID, subscriptionID, plan, status, currentPeriodEnd, cancelAtPeriodEnd, teamID, eventCreated, eventID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (r *TeamRepo) CreateInvitation(ctx context.Context, invitation *domain.TeamInvitation) error {
 	if _, err := r.db.Exec(ctx, `
 		UPDATE team_invitations

@@ -89,13 +89,18 @@ func (h *EmailHandler) BatchSend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "at least one email is required", http.StatusBadRequest)
 		return
 	}
+	batchKey := r.Header.Get("Idempotency-Key")
+	if batchKey == "" {
+		writeError(w, service.ErrBatchIdempotencyKeyRequired.Error(), http.StatusBadRequest)
+		return
+	}
 
 	_, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return
 	}
 
-	responses, err := h.emailService.BatchSend(r.Context(), teamID, reqs)
+	responses, err := h.emailService.BatchSend(r.Context(), teamID, reqs, batchKey)
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, service.ErrQueueUnavailable) {
@@ -106,6 +111,16 @@ func (h *EmailHandler) BatchSend(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, service.ErrDailyRecipientLimit) {
 			status = http.StatusTooManyRequests
+		}
+		if errors.Is(err, service.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		if len(responses) > 0 {
+			writeJSON(w, map[string]any{
+				"data":  responses,
+				"error": err.Error(),
+			}, http.StatusMultiStatus)
+			return
 		}
 		writeError(w, err.Error(), status)
 		return

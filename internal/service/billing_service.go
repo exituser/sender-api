@@ -21,6 +21,7 @@ type BillingStore interface {
 	GetByStripeCustomerID(ctx context.Context, customerID string) (*domain.Team, error)
 	GetByStripeSubscriptionID(ctx context.Context, subscriptionID string) (*domain.Team, error)
 	UpdateBilling(ctx context.Context, teamID uuid.UUID, customerID, subscriptionID *string, plan domain.Plan, status string, currentPeriodEnd *time.Time, cancelAtPeriodEnd bool) error
+	ApplyBillingEvent(ctx context.Context, eventID string, eventCreated int64, eventType string, teamID uuid.UUID, customerID, subscriptionID *string, plan domain.Plan, status string, currentPeriodEnd *time.Time, cancelAtPeriodEnd bool) error
 }
 
 type BillingService struct {
@@ -120,10 +121,10 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sign
 	if err := json.Unmarshal(event.Data.Object, &object); err != nil {
 		return fmt.Errorf("decode Stripe event object: %w", err)
 	}
-	return s.applyWebhookEvent(ctx, event.Type, object)
+	return s.applyWebhookEvent(ctx, event.ID, event.Created, event.Type, object)
 }
 
-func (s *BillingService) applyWebhookEvent(ctx context.Context, eventType string, object map[string]json.RawMessage) error {
+func (s *BillingService) applyWebhookEvent(ctx context.Context, eventID string, eventCreated int64, eventType string, object map[string]json.RawMessage) error {
 	metadata := stringMap(objectValue(object, "metadata"))
 	customerID := stringValue(object, "customer")
 	subscriptionID := stringValue(object, "subscription")
@@ -155,32 +156,36 @@ func (s *BillingService) applyWebhookEvent(ctx context.Context, eventType string
 	case "checkout.session.completed":
 		plan := planFromMetadata(metadata, domain.PlanFree)
 		if subscriptionID == "" {
-			return s.store.UpdateBilling(ctx, team.ID, customerPtr, nil, plan, "active", nil, false)
+			return s.applyBillingEvent(ctx, eventID, eventCreated, eventType, team.ID, customerPtr, nil, plan, "active", nil, false)
 		}
-		return s.store.UpdateBilling(ctx, team.ID, customerPtr, subscriptionPtr, plan, "active", nil, false)
+		return s.applyBillingEvent(ctx, eventID, eventCreated, eventType, team.ID, customerPtr, subscriptionPtr, plan, "active", nil, false)
 	case "customer.subscription.created", "customer.subscription.updated":
 		status := stringValue(object, "status")
 		if status == "" {
 			status = "active"
 		}
-		plan := planFromMetadata(metadata, planFromPrice(object, s.stripe, team.Plan))
+		plan, _ := planFromPrice(object, s.stripe)
 		if !subscriptionIsActive(status) && plan != domain.PlanFree {
 			plan = domain.PlanFree
 		}
 		periodEnd := timeValue(object, "current_period_end")
 		cancelAtPeriodEnd := boolValue(object, "cancel_at_period_end")
-		return s.store.UpdateBilling(ctx, team.ID, customerPtr, subscriptionPtr, plan, status, periodEnd, cancelAtPeriodEnd)
+		return s.applyBillingEvent(ctx, eventID, eventCreated, eventType, team.ID, customerPtr, subscriptionPtr, plan, status, periodEnd, cancelAtPeriodEnd)
 	case "customer.subscription.deleted":
 		status := stringValue(object, "status")
 		if status == "" {
 			status = "canceled"
 		}
-		return s.store.UpdateBilling(ctx, team.ID, customerPtr, nil, domain.PlanFree, status, nil, false)
+		return s.applyBillingEvent(ctx, eventID, eventCreated, eventType, team.ID, customerPtr, nil, domain.PlanFree, status, nil, false)
 	case "invoice.payment_failed":
-		return s.store.UpdateBilling(ctx, team.ID, customerPtr, subscriptionPtr, domain.PlanFree, "past_due", nil, false)
+		return s.applyBillingEvent(ctx, eventID, eventCreated, eventType, team.ID, customerPtr, subscriptionPtr, domain.PlanFree, "past_due", nil, false)
 	default:
 		return nil
 	}
+}
+
+func (s *BillingService) applyBillingEvent(ctx context.Context, eventID string, eventCreated int64, eventType string, teamID uuid.UUID, customerID, subscriptionID *string, plan domain.Plan, status string, currentPeriodEnd *time.Time, cancelAtPeriodEnd bool) error {
+	return s.store.ApplyBillingEvent(ctx, eventID, eventCreated, eventType, teamID, customerID, subscriptionID, plan, status, currentPeriodEnd, cancelAtPeriodEnd)
 }
 
 func (s *BillingService) resolveTeam(ctx context.Context, metadataTeamID, customerID, subscriptionID string) (*domain.Team, error) {
@@ -218,10 +223,10 @@ func planFromMetadata(metadata map[string]string, fallback domain.Plan) domain.P
 	return normalizePlan(fallback)
 }
 
-func planFromPrice(object map[string]json.RawMessage, stripe *billing.StripeClient, fallback domain.Plan) domain.Plan {
+func planFromPrice(object map[string]json.RawMessage, stripe *billing.StripeClient) (domain.Plan, bool) {
 	items, ok := object["items"]
 	if !ok || stripe == nil {
-		return fallback
+		return domain.PlanFree, false
 	}
 	var value struct {
 		Data []struct {
@@ -231,9 +236,9 @@ func planFromPrice(object map[string]json.RawMessage, stripe *billing.StripeClie
 		} `json:"data"`
 	}
 	if json.Unmarshal(items, &value) != nil || len(value.Data) == 0 {
-		return fallback
+		return domain.PlanFree, false
 	}
-	return stripe.PlanForPrice(value.Data[0].Price.ID, fallback)
+	return stripe.PlanForPrice(value.Data[0].Price.ID)
 }
 
 func billingStatus(team *domain.Team) string {

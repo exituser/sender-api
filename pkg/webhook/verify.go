@@ -93,12 +93,12 @@ func SendWebhookWithIDPolicy(ctx context.Context, deliveryID uuid.UUID, url stri
 		if err != nil {
 			lastErr = fmt.Errorf("send webhook: %w", err)
 		} else {
-			responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
 			_ = resp.Body.Close()
 			if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 				return nil
 			}
-			lastErr = fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(responseBody))
+			lastErr = fmt.Errorf("webhook returned status %d", resp.StatusCode)
 			if resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
 				return lastErr
 			}

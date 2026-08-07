@@ -42,11 +42,14 @@ func (l *RedisUsageLimiter) Reserve(ctx context.Context, teamID uuid.UUID, units
 	return result == 1, nil
 }
 
-func (l *RedisUsageLimiter) Release(ctx context.Context, teamID uuid.UUID, units int) error {
+func (l *RedisUsageLimiter) Release(ctx context.Context, teamID uuid.UUID, units int, reservedAt time.Time) error {
 	if l == nil || l.client == nil || units <= 0 {
 		return nil
 	}
-	key, _ := usageKey(teamID, time.Now().UTC())
+	if reservedAt.IsZero() {
+		reservedAt = time.Now().UTC()
+	}
+	key, _ := usageKey(teamID, reservedAt.UTC())
 	const script = `
 		local current = redis.call('GET', KEYS[1])
 		if not current then return 0 end

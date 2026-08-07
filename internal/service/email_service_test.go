@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sender-api/sender-api/internal/domain"
@@ -59,7 +61,7 @@ func (s *usageLimiterStub) Reserve(_ context.Context, _ uuid.UUID, units, limit 
 	return s.allowed, s.reserveErr
 }
 
-func (s *usageLimiterStub) Release(_ context.Context, _ uuid.UUID, units int) error {
+func (s *usageLimiterStub) Release(_ context.Context, _ uuid.UUID, units int, _ time.Time) error {
 	s.releaseUnits = units
 	return s.releaseErr
 }
@@ -240,6 +242,15 @@ func TestEmailServiceKeepsDailyRecipientLimitAfterSuccessfulQueue(t *testing.T) 
 	}
 	if repo.createCalls != 1 || queue.enqueueCalls != 1 {
 		t.Fatalf("expected one persisted and enqueued email: creates=%d enqueues=%d", repo.createCalls, queue.enqueueCalls)
+	}
+}
+
+func TestBatchItemIdempotencyKeyIsStableAndBounded(t *testing.T) {
+	if first, second := batchItemIdempotencyKey("batch-123", 4), batchItemIdempotencyKey("batch-123", 4); first != second {
+		t.Fatalf("expected stable batch key, got %q and %q", first, second)
+	}
+	if got := batchItemIdempotencyKey(strings.Repeat("x", 255), 4); len(got) > 255 {
+		t.Fatalf("batch item key exceeds database limit: %d", len(got))
 	}
 }
 

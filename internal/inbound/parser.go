@@ -169,7 +169,7 @@ func mimeFilename(header mail.Header) (string, string) {
 }
 
 func readMIMEBody(header mail.Header, body io.Reader, limit int) ([]byte, error) {
-	var decoded io.Reader = body
+	decoded := io.Reader(body)
 	switch strings.ToLower(strings.TrimSpace(header.Get("Content-Transfer-Encoding"))) {
 	case "", "7bit", "8bit", "binary":
 	case "base64":

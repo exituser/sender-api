@@ -20,8 +20,9 @@ go.work.sum
 
 # Environment
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.production.example
 
 # IDE
 .idea/
@@ -46,6 +47,9 @@ build/
 
 # Docker
 docker-compose.override.yml
+
+# OMX local runtime state
+.omx/
 
 # Local database backups
 backups/

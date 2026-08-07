@@ -60,10 +60,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisURL,
-		PoolSize: cfg.RedisPoolSize,
-	})
+	redisOptions, err := config.ParseRedisOptions(cfg.RedisURL)
+	if err != nil {
+		logger.Error("invalid redis config", "error", err)
+		os.Exit(1)
+	}
+	redisOptions.PoolSize = cfg.RedisPoolSize
+	redisClient := redis.NewClient(redisOptions)
 	defer func() { _ = redisClient.Close() }()
 	if err := redisClient.Ping(startupCtx).Err(); err != nil {
 		logger.Error("failed to connect to redis", "error", err)
@@ -114,6 +117,7 @@ func main() {
 			cfg.InboundS3Bucket,
 			cfg.AWSRegion,
 			cfg.InboundSNSTopicArn,
+			int32(cfg.InboundVisibilityTimeoutSeconds),
 			inboundService,
 			logger,
 		)

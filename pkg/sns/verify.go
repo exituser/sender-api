@@ -30,6 +30,9 @@ type Notification struct {
 	SigningCertURL   string
 	Signature        string
 	SignatureVersion string
+	SubscribeURL     string
+	UnsubscribeURL   string
+	Token            string
 }
 
 type certificateCacheEntry struct {
@@ -50,7 +53,18 @@ var (
 var snsCertificateHost = regexp.MustCompile(`^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$`)
 
 func VerifyNotification(ctx context.Context, notification Notification, region string, now time.Time) error {
-	if notification.Type != "Notification" {
+	return verifyNotification(ctx, notification, region, now, false)
+}
+
+// VerifyNotificationForQueue accepts signed notifications delayed by the
+// asynchronous SNS-to-SQS transport. Side effects are deduplicated by the
+// provider/SNS message identifiers downstream.
+func VerifyNotificationForQueue(ctx context.Context, notification Notification, region string, now time.Time) error {
+	return verifyNotification(ctx, notification, region, now, true)
+}
+
+func verifyNotification(ctx context.Context, notification Notification, region string, now time.Time, allowDelayed bool) error {
+	if notification.Type != "Notification" && notification.Type != "SubscriptionConfirmation" && notification.Type != "UnsubscribeConfirmation" {
 		return fmt.Errorf("%w: unsupported SNS message type", ErrInvalidNotification)
 	}
 	if notification.Message == "" || notification.MessageID == "" || notification.TopicArn == "" ||
@@ -58,8 +72,14 @@ func VerifyNotification(ctx context.Context, notification Notification, region s
 		(notification.SignatureVersion != "1" && notification.SignatureVersion != "2") {
 		return fmt.Errorf("%w: incomplete SNS notification", ErrInvalidNotification)
 	}
+	if notification.Type == "SubscriptionConfirmation" && (notification.SubscribeURL == "" || notification.Token == "") {
+		return fmt.Errorf("%w: incomplete SNS subscription confirmation", ErrInvalidNotification)
+	}
+	if notification.Type == "UnsubscribeConfirmation" && (notification.UnsubscribeURL == "" || notification.Token == "") {
+		return fmt.Errorf("%w: incomplete SNS unsubscription confirmation", ErrInvalidNotification)
+	}
 	timestamp, err := time.Parse(time.RFC3339, notification.Timestamp)
-	if err != nil || timestamp.Before(now.Add(-5*time.Minute)) || timestamp.After(now.Add(5*time.Minute)) {
+	if err != nil || timestamp.After(now.Add(5*time.Minute)) || (!allowDelayed && timestamp.Before(now.Add(-5*time.Minute))) {
 		return fmt.Errorf("%w", ErrStaleNotification)
 	}
 	if !validCertificateURL(notification.SigningCertURL, region) {
@@ -106,13 +126,64 @@ func StringToSign(notification Notification) string {
 	}
 	write("Message", notification.Message)
 	write("MessageId", notification.MessageID)
-	if notification.Subject != "" {
+	if notification.Type == "Notification" && notification.Subject != "" {
 		write("Subject", notification.Subject)
 	}
+	if notification.Type == "SubscriptionConfirmation" {
+		write("SubscribeURL", notification.SubscribeURL)
+	}
 	write("Timestamp", notification.Timestamp)
+	if notification.Type == "UnsubscribeConfirmation" {
+		write("UnsubscribeURL", notification.UnsubscribeURL)
+	}
+	if notification.Type != "Notification" {
+		write("Token", notification.Token)
+	}
 	write("TopicArn", notification.TopicArn)
 	write("Type", notification.Type)
 	return builder.String()
+}
+
+func ConfirmSubscription(ctx context.Context, notification Notification, region string) error {
+	if notification.Type != "SubscriptionConfirmation" {
+		return fmt.Errorf("%w: unsupported SNS confirmation type", ErrInvalidNotification)
+	}
+	parsed, err := url.Parse(notification.SubscribeURL)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Port() != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%w: invalid SNS subscribe URL", ErrInvalidNotification)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if !snsCertificateHost.MatchString(host) {
+		return fmt.Errorf("%w: invalid SNS subscribe host", ErrInvalidNotification)
+	}
+	if region != "" && host != "sns."+strings.ToLower(region)+".amazonaws.com" && host != "sns."+strings.ToLower(region)+".amazonaws.com.cn" {
+		return fmt.Errorf("%w: invalid SNS subscribe host", ErrInvalidNotification)
+	}
+	query := parsed.Query()
+	if query.Get("Action") != "ConfirmSubscription" || query.Get("Token") == "" || query.Get("TopicArn") == "" ||
+		(notification.Token != "" && query.Get("Token") != notification.Token) ||
+		(notification.TopicArn != "" && query.Get("TopicArn") != notification.TopicArn) {
+		return fmt.Errorf("%w: incomplete SNS subscribe URL", ErrInvalidNotification)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return err
+	}
+	response, err := (&http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}).Do(request)
+	if err != nil {
+		return fmt.Errorf("confirm SNS subscription: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 8<<10))
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("confirm SNS subscription: provider returned %d", response.StatusCode)
+	}
+	return nil
 }
 
 func validCertificateURL(rawURL, region string) bool {

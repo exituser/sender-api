@@ -22,26 +22,31 @@ const maxInboundMessageSize = 10 << 20
 var ErrDiscardInboundMessage = errors.New("discard inbound message")
 
 type InboundWorker struct {
-	s3Client       *s3.Client
-	sqsClient      *sqs.Client
-	queueURL       string
-	bucket         string
-	awsRegion      string
-	snsTopicArn    string
-	inboundService *service.InboundService
-	logger         *slog.Logger
+	s3Client          *s3.Client
+	sqsClient         *sqs.Client
+	queueURL          string
+	bucket            string
+	awsRegion         string
+	visibilityTimeout int32
+	snsTopicArn       string
+	inboundService    *service.InboundService
+	logger            *slog.Logger
 }
 
-func NewInboundWorker(s3Client *s3.Client, sqsClient *sqs.Client, queueURL, bucket, awsRegion, snsTopicArn string, inboundService *service.InboundService, logger *slog.Logger) *InboundWorker {
+func NewInboundWorker(s3Client *s3.Client, sqsClient *sqs.Client, queueURL, bucket, awsRegion, snsTopicArn string, visibilityTimeout int32, inboundService *service.InboundService, logger *slog.Logger) *InboundWorker {
+	if visibilityTimeout <= 0 {
+		visibilityTimeout = 120
+	}
 	return &InboundWorker{
-		s3Client:       s3Client,
-		sqsClient:      sqsClient,
-		queueURL:       queueURL,
-		bucket:         bucket,
-		awsRegion:      awsRegion,
-		snsTopicArn:    snsTopicArn,
-		inboundService: inboundService,
-		logger:         logger,
+		s3Client:          s3Client,
+		sqsClient:         sqsClient,
+		queueURL:          queueURL,
+		bucket:            bucket,
+		awsRegion:         awsRegion,
+		visibilityTimeout: visibilityTimeout,
+		snsTopicArn:       snsTopicArn,
+		inboundService:    inboundService,
+		logger:            logger,
 	}
 }
 
@@ -59,7 +64,7 @@ func (w *InboundWorker) Start(ctx context.Context) {
 			QueueUrl:            aws.String(w.queueURL),
 			MaxNumberOfMessages: 10,
 			WaitTimeSeconds:     20,
-			VisibilityTimeout:   60,
+			VisibilityTimeout:   w.visibilityTimeout,
 		})
 		if err != nil {
 			if ctx.Err() != nil {

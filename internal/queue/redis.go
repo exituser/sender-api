@@ -114,17 +114,17 @@ func boolString(value bool) string {
 }
 
 func (q *RedisQueue) Recover(ctx context.Context) error {
-	items, err := q.client.LRange(ctx, emailProcessingKey, 0, -1).Result()
-	if err != nil {
-		return fmt.Errorf("list processing items: %w", err)
-	}
-	for _, emailID := range items {
-		if err := q.client.LRem(ctx, emailProcessingKey, 1, emailID).Err(); err != nil {
-			return fmt.Errorf("recover processing item: %w", err)
-		}
-		if err := q.client.RPush(ctx, emailPendingKey, emailID).Err(); err != nil {
-			return fmt.Errorf("requeue recovered item: %w", err)
-		}
+	const script = `
+		local items = redis.call('LRANGE', KEYS[1], 0, -1)
+		if #items == 0 then return 0 end
+		redis.call('DEL', KEYS[1])
+		for _, item in ipairs(items) do
+			redis.call('RPUSH', KEYS[2], item)
+		end
+		return #items
+	`
+	if _, err := q.client.Eval(ctx, script, []string{emailProcessingKey, emailPendingKey}).Result(); err != nil {
+		return fmt.Errorf("recover processing items: %w", err)
 	}
 	return nil
 }

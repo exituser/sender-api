@@ -18,12 +18,13 @@ type Config struct {
 	Debug       bool
 	CORSOrigins string
 
-	DatabaseURL        string
-	RedisURL           string
-	DBMaxConns         int
-	DBMinConns         int
-	RedisPoolSize      int
-	WorkerPollInterval time.Duration
+	DatabaseURL                     string
+	RedisURL                        string
+	DBMaxConns                      int
+	DBMinConns                      int
+	RedisPoolSize                   int
+	WorkerPollInterval              time.Duration
+	InboundVisibilityTimeoutSeconds int
 
 	AWSRegion           string
 	AWSAccessKeyID      string
@@ -66,12 +67,13 @@ func Load() *Config {
 		Debug:       getBoolEnv("DEBUG", true),
 		CORSOrigins: getEnv("CORS_ORIGINS", "http://localhost:3000"),
 
-		DatabaseURL:        getEnv("DATABASE_URL", "postgresql://supabase_admin:postgres@localhost:5432/sender_api"),
-		RedisURL:           getEnv("REDIS_URL", "localhost:6379"),
-		DBMaxConns:         getPositiveIntEnv("DB_MAX_CONNS", 4),
-		DBMinConns:         getNonNegativeIntEnv("DB_MIN_CONNS", 0),
-		RedisPoolSize:      getPositiveIntEnv("REDIS_POOL_SIZE", 4),
-		WorkerPollInterval: getDurationEnv("WORKER_POLL_INTERVAL", 5*time.Second),
+		DatabaseURL:                     getEnv("DATABASE_URL", "postgresql://supabase_admin:postgres@localhost:5432/sender_api"),
+		RedisURL:                        getEnv("REDIS_URL", "localhost:6379"),
+		DBMaxConns:                      getPositiveIntEnv("DB_MAX_CONNS", 4),
+		DBMinConns:                      getNonNegativeIntEnv("DB_MIN_CONNS", 0),
+		RedisPoolSize:                   getPositiveIntEnv("REDIS_POOL_SIZE", 4),
+		WorkerPollInterval:              getDurationEnv("WORKER_POLL_INTERVAL", 5*time.Second),
+		InboundVisibilityTimeoutSeconds: getPositiveIntEnv("INBOUND_SQS_VISIBILITY_TIMEOUT_SECONDS", 120),
 
 		AWSRegion:           getEnv("AWS_REGION", "eu-west-1"),
 		AWSAccessKeyID:      os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -126,6 +128,9 @@ func (c *Config) Validate() error {
 	if c.WorkerPollInterval < 0 {
 		return fmt.Errorf("WORKER_POLL_INTERVAL must not be negative")
 	}
+	if c.InboundVisibilityTimeoutSeconds != 0 && (c.InboundVisibilityTimeoutSeconds < 1 || c.InboundVisibilityTimeoutSeconds > 43200) {
+		return fmt.Errorf("INBOUND_SQS_VISIBILITY_TIMEOUT_SECONDS must be between 1 and 43200")
+	}
 	if c.DailyRecipientLimit < 0 {
 		return fmt.Errorf("DAILY_RECIPIENT_LIMIT must not be negative")
 	}
@@ -141,7 +146,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("SUPABASE_URL must be an HTTPS URL in production")
 		}
 		if c.DatabaseURL == "postgresql://supabase_admin:postgres@localhost:5432/sender_api" ||
-			c.SupabaseURL == "http://localhost:54321" || c.RedisURL == "localhost:6379" || c.RedisURL == "redis:6379" {
+			c.SupabaseURL == "http://localhost:54321" || c.RedisURL == "localhost:6379" {
 			return fmt.Errorf("development service defaults are not allowed in production")
 		}
 		for key, value := range map[string]string{
@@ -158,6 +163,12 @@ func (c *Config) Validate() error {
 		}
 		if c.DailyRecipientLimit < 1 {
 			return fmt.Errorf("DAILY_RECIPIENT_LIMIT must be positive in production")
+		}
+		if err := validateProductionDatabaseURL(c.DatabaseURL); err != nil {
+			return err
+		}
+		if err := validateProductionRedisURL(c.RedisURL); err != nil {
+			return err
 		}
 	}
 	if c.OutboundSESTopicArn != "" && strings.TrimSpace(c.AWSESConfigSet) == "" {
@@ -197,6 +208,43 @@ func (c *Config) Validate() error {
 	}
 	if c.InboundSQSQueueURL != "" && strings.TrimSpace(c.InboundSNSTopicArn) == "" {
 		return fmt.Errorf("INBOUND_SNS_TOPIC_ARN is required when INBOUND_SQS_QUEUE_URL is configured")
+	}
+	return nil
+}
+
+func validateProductionDatabaseURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Hostname() == "" {
+		return fmt.Errorf("DATABASE_URL must be a valid PostgreSQL URL in production")
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	localHost := host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "db"
+	if localHost {
+		return nil
+	}
+
+	sslmode := strings.ToLower(strings.TrimSpace(parsed.Query().Get("sslmode")))
+	if sslmode != "require" && sslmode != "verify-ca" && sslmode != "verify-full" {
+		return fmt.Errorf("DATABASE_URL must require TLS for a remote production database")
+	}
+	return nil
+}
+
+func validateProductionRedisURL(raw string) error {
+	value := strings.TrimSpace(raw)
+	if !strings.Contains(value, "://") {
+		value = "redis://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "redis" && parsed.Scheme != "rediss") {
+		return fmt.Errorf("REDIS_URL must be a valid Redis URL in production")
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	localHost := host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "redis" || host == "db"
+	if !localHost && parsed.Scheme != "rediss" {
+		return fmt.Errorf("REDIS_URL must use TLS for a remote production Redis")
 	}
 	return nil
 }

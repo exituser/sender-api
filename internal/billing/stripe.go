@@ -46,9 +46,10 @@ type PortalSession struct {
 }
 
 type Event struct {
-	ID   string
-	Type string
-	Data struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Created int64  `json:"created"`
+	Data    struct {
 		Object json.RawMessage `json:"object"`
 	} `json:"data"`
 }
@@ -77,15 +78,15 @@ func (c *StripeClient) WebhookConfigured() bool {
 	return c != nil && c.webhookSecret != ""
 }
 
-func (c *StripeClient) PlanForPrice(priceID string, fallback domain.Plan) domain.Plan {
+func (c *StripeClient) PlanForPrice(priceID string) (domain.Plan, bool) {
 	if c != nil {
 		for plan, configuredPrice := range c.prices {
 			if configuredPrice != "" && configuredPrice == strings.TrimSpace(priceID) {
-				return plan
+				return plan, true
 			}
 		}
 	}
-	return fallback
+	return domain.PlanFree, false
 }
 
 func (c *StripeClient) CreateCustomer(ctx context.Context, team *domain.Team) (string, error) {
@@ -105,7 +106,7 @@ func (c *StripeClient) CreateCustomer(ctx context.Context, team *domain.Team) (s
 		return "", err
 	}
 	if response.ID == "" {
-		return "", errors.New("Stripe returned an empty customer id")
+		return "", errors.New("stripe returned an empty customer id")
 	}
 	return response.ID, nil
 }
@@ -116,7 +117,7 @@ func (c *StripeClient) CreateCheckoutSession(ctx context.Context, teamID uuid.UU
 	}
 	priceID := c.prices[plan]
 	if priceID == "" {
-		return nil, fmt.Errorf("Stripe price is not configured for plan %q", plan)
+		return nil, fmt.Errorf("stripe price is not configured for plan %q", plan)
 	}
 	if c.successURL == "" || c.cancelURL == "" {
 		return nil, errors.New("billing success and cancel URLs are not configured")
@@ -138,7 +139,7 @@ func (c *StripeClient) CreateCheckoutSession(ctx context.Context, teamID uuid.UU
 		return nil, err
 	}
 	if response.ID == "" || response.URL == "" {
-		return nil, errors.New("Stripe returned an incomplete checkout session")
+		return nil, errors.New("stripe returned an incomplete checkout session")
 	}
 	return &response, nil
 }
@@ -158,7 +159,7 @@ func (c *StripeClient) CreatePortalSession(ctx context.Context, customerID strin
 		return nil, err
 	}
 	if response.ID == "" || response.URL == "" {
-		return nil, errors.New("Stripe returned an incomplete portal session")
+		return nil, errors.New("stripe returned an incomplete portal session")
 	}
 	return &response, nil
 }
@@ -240,7 +241,7 @@ func (c *StripeClient) postForm(ctx context.Context, path string, form url.Value
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("Stripe API request: %w", err)
+		return fmt.Errorf("stripe API request: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
@@ -248,7 +249,7 @@ func (c *StripeClient) postForm(ctx context.Context, path string, form url.Value
 		return fmt.Errorf("read Stripe API response: %w", err)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("Stripe API returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
+		return fmt.Errorf("stripe API returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
 	}
 	if err := json.Unmarshal(responseBody, output); err != nil {
 		return fmt.Errorf("decode Stripe API response: %w", err)

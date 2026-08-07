@@ -32,7 +32,9 @@ paths:
   /emails/batch:
     post:
       summary: Queue multiple emails
-      parameters: [ { $ref: '#/components/parameters/TeamID' } ]
+      parameters:
+        - $ref: '#/components/parameters/TeamID'
+        - $ref: '#/components/parameters/RequiredIdempotencyKey'
       requestBody:
         required: true
         content:
@@ -43,6 +45,7 @@ paths:
               items: { $ref: '#/components/schemas/SendEmailRequest' }
       responses:
         '201': { $ref: '#/components/responses/JSON' }
+        '207': { $ref: '#/components/responses/JSON' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /emails/{id}:
@@ -312,6 +315,7 @@ components:
     ID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
     TeamID: { name: X-Team-ID, in: header, required: false, description: Required for JWT requests; API keys already identify their team., schema: { type: string, format: uuid } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: false, schema: { type: string, maxLength: 255 } }
+    RequiredIdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
     Offset: { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
   requestBodies:

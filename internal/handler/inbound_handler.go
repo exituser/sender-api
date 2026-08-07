@@ -51,7 +51,41 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 	}
 
 	var notification *inbound.SESNotification
-	if envelope.Type == "Notification" && envelope.Message != "" {
+	if envelope.Type == "SubscriptionConfirmation" || envelope.Type == "UnsubscribeConfirmation" {
+		if err := sns.VerifyNotification(r.Context(), sns.Notification{
+			Type:             envelope.Type,
+			Message:          envelope.Message,
+			MessageID:        envelope.MessageID,
+			Timestamp:        envelope.Timestamp,
+			TopicArn:         envelope.TopicArn,
+			SigningCertURL:   envelope.SigningCertURL,
+			Signature:        envelope.Signature,
+			SignatureVersion: envelope.SignatureVersion,
+			SubscribeURL:     envelope.SubscribeURL,
+			UnsubscribeURL:   envelope.UnsubscribeURL,
+			Token:            envelope.Token,
+		}, h.awsRegion, time.Now().UTC()); err != nil {
+			writeError(w, "invalid SNS confirmation", http.StatusUnauthorized)
+			return
+		}
+		if h.snsTopicArn != "" && envelope.TopicArn != h.snsTopicArn {
+			writeError(w, "invalid SNS confirmation", http.StatusUnauthorized)
+			return
+		}
+		if envelope.Type == "SubscriptionConfirmation" {
+			if err := sns.ConfirmSubscription(r.Context(), sns.Notification{
+				Type:         envelope.Type,
+				TopicArn:     envelope.TopicArn,
+				SubscribeURL: envelope.SubscribeURL,
+				Token:        envelope.Token,
+			}, h.awsRegion); err != nil {
+				writeError(w, "failed to confirm SNS subscription", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		writeJSON(w, map[string]string{"status": "confirmed"}, http.StatusOK)
+		return
+	} else if envelope.Type == "Notification" && envelope.Message != "" {
 		if err := sns.VerifyNotification(r.Context(), sns.Notification{
 			Type:             envelope.Type,
 			Message:          envelope.Message,
@@ -62,6 +96,9 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 			SigningCertURL:   envelope.SigningCertURL,
 			Signature:        envelope.Signature,
 			SignatureVersion: envelope.SignatureVersion,
+			SubscribeURL:     envelope.SubscribeURL,
+			UnsubscribeURL:   envelope.UnsubscribeURL,
+			Token:            envelope.Token,
 		}, h.awsRegion, time.Now().UTC()); err != nil {
 			writeError(w, "invalid SNS notification", http.StatusUnauthorized)
 			return
@@ -98,8 +135,11 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 	}
 
 	if notification == nil || notification.Content == "" {
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "no content"})
+		if notification != nil && notification.Receipt.Action.ObjectKey != "" {
+			writeError(w, "S3-backed inbound messages must use the SQS worker", http.StatusServiceUnavailable)
+			return
+		}
+		writeError(w, "inbound notification has no raw content", http.StatusUnprocessableEntity)
 		return
 	}
 
@@ -122,8 +162,7 @@ func (h *InboundHandler) HandleSESPayload(w http.ResponseWriter, r *http.Request
 	}
 	teamID, err := h.teamForRecipients(r.Context(), routingRecipients)
 	if err != nil {
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "domain not found"})
+		writeError(w, "inbound recipient cannot be routed yet", http.StatusServiceUnavailable)
 		return
 	}
 

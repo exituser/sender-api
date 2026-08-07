@@ -55,12 +55,32 @@ func (h *SESEventHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		SigningCertURL:   envelope.SigningCertURL,
 		Signature:        envelope.Signature,
 		SignatureVersion: envelope.SignatureVersion,
+		SubscribeURL:     envelope.SubscribeURL,
+		UnsubscribeURL:   envelope.UnsubscribeURL,
+		Token:            envelope.Token,
 	}, h.awsRegion, time.Now().UTC()); err != nil {
 		writeError(w, "invalid SNS notification", http.StatusUnauthorized)
 		return
 	}
 	if h.topicArn != "" && envelope.TopicArn != h.topicArn {
 		writeError(w, "invalid SNS notification", http.StatusUnauthorized)
+		return
+	}
+	if envelope.Type == "SubscriptionConfirmation" {
+		if err := sns.ConfirmSubscription(r.Context(), sns.Notification{
+			Type:         envelope.Type,
+			TopicArn:     envelope.TopicArn,
+			SubscribeURL: envelope.SubscribeURL,
+			Token:        envelope.Token,
+		}, h.awsRegion); err != nil {
+			writeError(w, "failed to confirm SNS subscription", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "confirmed"}, http.StatusOK)
+		return
+	}
+	if envelope.Type == "UnsubscribeConfirmation" {
+		writeJSON(w, map[string]string{"status": "ignored"}, http.StatusOK)
 		return
 	}
 

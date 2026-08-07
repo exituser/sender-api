@@ -11,6 +11,26 @@ import (
 var (
 	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 	slugRegex  = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+	webhookRestrictedNetworks = func() []*net.IPNet {
+		cidrs := []string{
+			"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+			"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+			"192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
+			"203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+			"::/128", "::1/128", "100::/64", "2001:2::/48", "2001:10::/28",
+			"2001:20::/28", "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8",
+		}
+		networks := make([]*net.IPNet, 0, len(cidrs))
+		for _, cidr := range cidrs {
+			_, network, err := net.ParseCIDR(cidr)
+			if err != nil {
+				panic(err)
+			}
+			networks = append(networks, network)
+		}
+		return networks
+	}()
 )
 
 func IsValidEmail(email string) bool {
@@ -99,7 +119,7 @@ func ContainsString(slice []string, s string) bool {
 
 func IsPrivateHost(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
 		return true
 	}
 	ip := net.ParseIP(host)
@@ -110,11 +130,19 @@ func IsPrivateHost(host string) bool {
 }
 
 func IsPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
 	if ip4 := ip.To4(); ip4 != nil {
-		if ip4[0] == 0 {
-			return true
-		}
 		ip = ip4
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+	if !ip.IsGlobalUnicast() {
+		return true
+	}
+	for _, network := range webhookRestrictedNetworks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

@@ -92,10 +92,13 @@ func main() {
 
 	logger.Info("connected to database")
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisURL,
-		PoolSize: cfg.RedisPoolSize,
-	})
+	redisOptions, err := config.ParseRedisOptions(cfg.RedisURL)
+	if err != nil {
+		logger.Error("invalid redis config", "error", err)
+		os.Exit(1)
+	}
+	redisOptions.PoolSize = cfg.RedisPoolSize
+	redisClient := redis.NewClient(redisOptions)
 	defer func() { _ = redisClient.Close() }()
 
 	redisReady := true
@@ -242,7 +245,7 @@ func main() {
 	// that share the /webhooks and /inbound prefixes.
 	if cfg.InboundSQSQueueURL != "" || cfg.InboundSNSTopicArn != "" || cfg.InboundWebhookToken != "" {
 		r.With(
-			pkgmiddleware.RateLimit(redisClient),
+			pkgmiddleware.RateLimit(redisClient, "inbound"),
 		).Post(
 			"/api/v1/inbound/ses",
 			inboundHandler.HandleSESPayload,
@@ -250,14 +253,14 @@ func main() {
 	}
 	if cfg.OutboundSESTopicArn != "" {
 		r.With(
-			pkgmiddleware.RateLimit(redisClient),
+			pkgmiddleware.RateLimit(redisClient, "ses"),
 		).Post(
 			"/api/v1/webhooks/ses",
 			sesEventHandler.Handle,
 		)
 	}
 	if cfg.StripeWebhookSecret != "" {
-		r.With(pkgmiddleware.RateLimit(redisClient)).Post(
+		r.With(pkgmiddleware.RateLimit(redisClient, "stripe")).Post(
 			"/api/v1/webhooks/stripe",
 			billingHandler.HandleWebhook,
 		)
@@ -265,7 +268,7 @@ func main() {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(auth.AuthMiddleware)
-		r.Use(pkgmiddleware.RateLimit(redisClient))
+		r.Use(pkgmiddleware.RateLimit(redisClient, "api"))
 
 		r.Mount("/emails", emailHandler.Routes())
 		r.Mount("/teams", teamHandler.Routes())
