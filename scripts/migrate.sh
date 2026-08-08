@@ -28,24 +28,24 @@ for migration in "${migrations[@]}"; do
         continue
     fi
 
-	state="$(${psql_cmd[@]} -Atc "SELECT COALESCE(MAX(version), 0) || '|' || COALESCE(bool_or(dirty), false) FROM public.schema_migrations;")"
+	state="$(${psql_cmd[@]} -Atc "SELECT COALESCE(MAX(version), 0) || '|' || COALESCE((SELECT dirty FROM public.schema_migrations WHERE version = (SELECT MAX(version) FROM public.schema_migrations)), false) FROM public.schema_migrations;")"
 	current="${state%%|*}"
 	dirty="${state##*|}"
 	if [[ "$dirty" == "t" ]]; then
 		echo "schema_migrations is dirty; repair the database before continuing" >&2
 		exit 1
 	fi
-    if (( version <= current )); then
+    if (( 10#$version <= current )); then
         continue
     fi
 
     echo "applying migration $migration"
     "${psql_cmd[@]}" <<SQL
 BEGIN;
-UPDATE public.schema_migrations SET dirty = true;
+INSERT INTO public.schema_migrations (version, dirty) VALUES ($((10#$version)), true)
+ON CONFLICT (version) DO UPDATE SET dirty = true;
 \i '$repo_root/migrations/$migration'
-INSERT INTO public.schema_migrations (version, dirty) VALUES ($version, false)
-ON CONFLICT (version) DO UPDATE SET dirty = EXCLUDED.dirty;
+UPDATE public.schema_migrations SET dirty = false WHERE version = $((10#$version));
 COMMIT;
 SQL
 done
