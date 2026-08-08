@@ -22,7 +22,7 @@ export default function EmailsPage() {
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [sending, setSending] = useState(false);
-  const [form, setForm] = useState({ from: "", to: "", cc: "", bcc: "", replyTo: "", subject: "", text: "", html: "", headers: "", metadata: "", tags: "", scheduledAt: "" });
+  const [form, setForm] = useState({ from: "", to: "", cc: "", bcc: "", replyTo: "", subject: "", text: "", html: "", category: "transactional", headers: "", metadata: "", tags: "", scheduledAt: "" });
   const [attachments, setAttachments] = useState<File[]>([]);
 
   const splitAddresses = (value: string) => value.split(",").map((address) => address.trim()).filter(Boolean);
@@ -65,13 +65,36 @@ export default function EmailsPage() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case "sent":
+      case "delivered":
+      case "opened":
+      case "clicked":
         return "bg-green-100 text-green-800";
       case "failed":
         return "bg-red-100 text-red-800";
       case "queued":
+      case "sending":
         return "bg-yellow-100 text-yellow-800";
+      case "bounced":
+      case "complained":
+        return "bg-orange-100 text-orange-800";
       default:
         return "bg-gray-100 text-gray-800";
+    }
+  };
+
+  const getStatusLabel = (status: string) => {
+    switch (status) {
+      case "queued": return "Waiting to send";
+      case "sending": return "Sending";
+      case "sent": return "Accepted";
+      case "delivered": return "Delivered";
+      case "opened": return "Opened";
+      case "clicked": return "Link clicked";
+      case "bounced": return "Could not deliver";
+      case "complained": return "Recipient reported";
+      case "failed": return "Needs attention";
+      case "cancelled": return "Cancelled";
+      default: return "Processing";
     }
   };
 
@@ -93,13 +116,14 @@ export default function EmailsPage() {
         subject: form.subject,
         text: form.text,
         html: form.html,
+        category: form.category,
         headers,
         metadata,
         tags,
         attachments: encodedAttachments,
         scheduled_at: form.scheduledAt ? new Date(form.scheduledAt).toISOString() : undefined,
       });
-      setForm({ from: "", to: "", cc: "", bcc: "", replyTo: "", subject: "", text: "", html: "", headers: "", metadata: "", tags: "", scheduledAt: "" });
+      setForm({ from: "", to: "", cc: "", bcc: "", replyTo: "", subject: "", text: "", html: "", category: "transactional", headers: "", metadata: "", tags: "", scheduledAt: "" });
       setAttachments([]);
       setShowForm(false);
       await loadEmails();
@@ -145,12 +169,24 @@ export default function EmailsPage() {
             <input id="email-to" name="to" autoComplete="email" spellCheck={false} required type="email" multiple aria-describedby="email-to-hint" placeholder="recipient@example.com, another@example.com" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" />
             <p id="email-to-hint" className="mt-1 text-sm text-gray-500">Separate multiple recipients with commas.</p>
           </div>
-          <div><label htmlFor="email-html" className="block text-sm font-medium text-gray-700">HTML (optional)</label><textarea id="email-html" value={form.html} onChange={(e) => setForm({ ...form, html: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md min-h-32 font-mono text-sm" /></div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div><label htmlFor="email-headers" className="block text-sm font-medium text-gray-700">Custom headers</label><textarea id="email-headers" placeholder="X-Campaign=welcome" value={form.headers} onChange={(e) => setForm({ ...form, headers: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /><p className="mt-1 text-xs text-gray-500">One header=value pair per line.</p></div>
-            <div><label htmlFor="email-metadata" className="block text-sm font-medium text-gray-700">Metadata</label><textarea id="email-metadata" placeholder="campaign=welcome" value={form.metadata} onChange={(e) => setForm({ ...form, metadata: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /><p className="mt-1 text-xs text-gray-500">One key=value pair per line.</p></div>
-            <div><label htmlFor="email-tags" className="block text-sm font-medium text-gray-700">Tags</label><textarea id="email-tags" placeholder="category=transactional" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /><p className="mt-1 text-xs text-gray-500">One name=value pair per line.</p></div>
+          <div>
+            <label htmlFor="email-category" className="block text-sm font-medium text-gray-700">Message type</label>
+            <select id="email-category" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-base text-gray-900 sm:text-sm">
+              <option value="transactional">Transactional — receipts, alerts, account messages</option>
+              <option value="marketing">Marketing — updates people agreed to receive</option>
+            </select>
+            <p className="mt-1 text-sm text-gray-500">Marketing messages include an unsubscribe link and are sent one person at a time.</p>
           </div>
+          <div><label htmlFor="email-html" className="block text-sm font-medium text-gray-700">HTML (optional)</label><textarea id="email-html" value={form.html} onChange={(e) => setForm({ ...form, html: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md min-h-32 font-mono text-sm" /></div>
+          <details className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-gray-800">Advanced options</summary>
+            <p className="mt-2 text-sm leading-6 text-gray-600">Optional fields for developers who need extra delivery metadata.</p>
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div><label htmlFor="email-headers" className="block text-sm font-medium text-gray-700">Extra message headers</label><textarea id="email-headers" placeholder="X-Campaign=welcome" value={form.headers} onChange={(e) => setForm({ ...form, headers: e.target.value })} className="mt-1 w-full rounded-md border px-3 py-2" /><p className="mt-1 text-xs text-gray-500">One header=value pair per line.</p></div>
+              <div><label htmlFor="email-metadata" className="block text-sm font-medium text-gray-700">Internal metadata</label><textarea id="email-metadata" placeholder="campaign=welcome" value={form.metadata} onChange={(e) => setForm({ ...form, metadata: e.target.value })} className="mt-1 w-full rounded-md border px-3 py-2" /><p className="mt-1 text-xs text-gray-500">One key=value pair per line.</p></div>
+              <div><label htmlFor="email-tags" className="block text-sm font-medium text-gray-700">Labels</label><textarea id="email-tags" placeholder="campaign=welcome" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} className="mt-1 w-full rounded-md border px-3 py-2" /><p className="mt-1 text-xs text-gray-500">One name=value pair per line.</p></div>
+            </div>
+          </details>
           <div className="grid gap-4 md:grid-cols-2">
             <div><label htmlFor="email-scheduled-at" className="block text-sm font-medium text-gray-700">Schedule for (optional)</label><input id="email-scheduled-at" type="datetime-local" value={form.scheduledAt} onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })} className="mt-1 w-full px-3 py-2 border rounded-md" /></div>
             <div><label htmlFor="email-attachments" className="block text-sm font-medium text-gray-700">Attachments</label><input id="email-attachments" type="file" multiple onChange={(e) => setAttachments(Array.from(e.target.files ?? []))} className="mt-1 w-full px-3 py-2 border rounded-md" /><p className="mt-1 text-xs text-gray-500">Up to 5 MB per file; payload stays within the API’s 10 MB limit.</p></div>
@@ -206,7 +242,7 @@ export default function EmailsPage() {
                       email.status
                     )}`}
                   >
-                    {email.status}
+                    {getStatusLabel(email.status)}
                   </span>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -218,7 +254,8 @@ export default function EmailsPage() {
         </table>
         {emails.length === 0 && (
           <div className="text-center py-8 text-gray-500">
-            No emails found
+            <p className="font-medium text-gray-900">No messages yet</p>
+            <p className="mt-1 text-sm text-gray-500">Send your first message to see its progress here.</p>
           </div>
         )}
         <Pagination page={page} pageSize={50} total={total} onPageChange={setPage} disabled={loading} />

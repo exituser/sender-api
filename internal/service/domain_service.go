@@ -95,11 +95,11 @@ func (s *DomainService) Create(ctx context.Context, teamID uuid.UUID, req *domai
 		Status: d.Status,
 		DNSRecords: append([]domain.DNSRecord{
 			{Type: domain.DNSRecordTypeTXT, Host: "@", Value: *d.SPFDNSRecord, TTL: 3600, Status: d.SPFStatus},
-			{Type: domain.DNSRecordTypeMX, Host: "@", Value: *d.MXDNSRecord, TTL: 3600, Status: d.MXStatus},
+			{Type: domain.DNSRecordTypeMX, Host: "@", Value: *d.MXDNSRecord, TTL: 3600, Status: d.MXStatus, Optional: true},
 			{Type: domain.DNSRecordTypeTXT, Host: "_sender-api-verification", Value: token, TTL: 3600, Status: d.VerificationStatus},
 			{Type: domain.DNSRecordTypeTXT, Host: "_dmarc", Value: "v=DMARC1; p=none", TTL: 3600, Status: d.DMARCStatus},
 		}, d.DKIMDNSRecords...),
-		Instructions: "Add or merge the SPF, SES inbound MX, Sender API verification TXT, DKIM CNAME, and DMARC TXT records, then call the verify endpoint. Replacing an existing MX record changes mail routing and requires an explicit review.",
+		Instructions: "Add or merge the SPF, Sender API verification TXT, DKIM CNAME, and DMARC TXT records, then call the verify endpoint. The SES inbound MX record is optional and is only needed if you enable inbound email. Never replace existing MX records without reviewing your current mail routing.",
 		CreatedAt:    d.CreatedAt,
 	}, nil
 }
@@ -141,11 +141,18 @@ func (s *DomainService) Verify(ctx context.Context, teamID, domainID uuid.UUID) 
 
 	txtRecords, err := net.LookupTXT(d.Name)
 	if err == nil {
+		spfCount := 0
+		spfHasSES := false
 		for _, record := range txtRecords {
-			if containsSPF(record) {
-				d.SPFStatus = "verified"
-				break
+			if isSPFRecord(record) {
+				spfCount++
+				spfHasSES = spfHasSES || containsSPF(record)
 			}
+		}
+		if spfCount == 1 && spfHasSES {
+			d.SPFStatus = "verified"
+		} else if spfCount > 1 {
+			d.SPFStatus = "failed"
 		}
 	}
 
@@ -182,13 +189,16 @@ func (s *DomainService) Verify(ctx context.Context, teamID, domainID uuid.UUID) 
 		}
 	}
 
-	if d.SPFStatus == "verified" && d.VerificationStatus == "verified" &&
-		d.SESVerificationStatus == "verified" && d.MXStatus == "verified" &&
-		d.DKIMStatus == "verified" {
+	if outboundDomainVerified(d) {
 		d.Status = domain.DomainStatusVerified
 	}
 
 	return s.domainRepo.UpdateForTeam(ctx, d)
+}
+
+func outboundDomainVerified(d *domain.Domain) bool {
+	return d != nil && d.SPFStatus == "verified" && d.VerificationStatus == "verified" &&
+		d.SESVerificationStatus == "verified" && d.DKIMStatus == "verified"
 }
 
 func (s *DomainService) Delete(ctx context.Context, teamID, id uuid.UUID) error {
@@ -232,12 +242,42 @@ func (s *DomainService) generateToken() (string, error) {
 }
 
 func containsSPF(record string) bool {
-	return len(record) >= 4 && (strings.EqualFold(record[:4], "v=spf")) && strings.Contains(strings.ToLower(record), "include:amazonses.com")
+	if !isSPFRecord(record) {
+		return false
+	}
+	for _, field := range strings.Fields(strings.ToLower(record)) {
+		if field == "include:amazonses.com" {
+			return true
+		}
+	}
+	return false
 }
 
 func containsDMARC(record string) bool {
-	record = strings.TrimSpace(record)
-	return len(record) >= 8 && strings.EqualFold(record[:8], "v=dmarc1")
+	fields := strings.Split(record, ";")
+	versionFound := false
+	policyFound := false
+	for _, field := range fields {
+		parts := strings.SplitN(strings.TrimSpace(field), "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(parts[0])) {
+		case "v":
+			versionFound = strings.EqualFold(strings.TrimSpace(parts[1]), "DMARC1")
+		case "p":
+			switch strings.ToLower(strings.TrimSpace(parts[1])) {
+			case "none", "quarantine", "reject":
+				policyFound = true
+			}
+		}
+	}
+	return versionFound && policyFound
+}
+
+func isSPFRecord(record string) bool {
+	fields := strings.Fields(strings.TrimSpace(record))
+	return len(fields) > 0 && strings.EqualFold(fields[0], "v=spf1")
 }
 
 func (s *DomainService) applySESIdentity(d *domain.Domain, identity *domain.SESIdentity) {

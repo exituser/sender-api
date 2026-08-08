@@ -102,7 +102,10 @@ func (m *SESMailer) Send(ctx context.Context, email *domain.Email) (string, erro
 			"email_id", email.ID,
 			"error", err,
 		)
-		return "", domain.NewDeliveryError(fmt.Errorf("ses send failed: %w", err), sesErrorRetryable(err))
+		retryable, smtpCode, enhancedCode, providerCode := sesErrorDetails(err)
+		return "", domain.NewDeliveryErrorWithDetails(
+			fmt.Errorf("ses send failed: %w", err), retryable, smtpCode, enhancedCode, providerCode,
+		)
 	}
 
 	m.logger.Info("email sent via SES",
@@ -117,18 +120,29 @@ func (m *SESMailer) Send(ctx context.Context, email *domain.Email) (string, erro
 }
 
 func sesErrorRetryable(err error) bool {
+	retryable, _, _, _ := sesErrorDetails(err)
+	return retryable
+}
+
+// sesErrorDetails maps provider failures into the RFC 3463-style status model
+// exposed by the API. SES returns AWS error codes rather than SMTP responses,
+// so these codes are normalized equivalents, not wire-level SMTP evidence.
+func sesErrorDetails(err error) (retryable bool, smtpCode int, enhancedCode, providerCode string) {
 	if errors.Is(err, context.Canceled) {
-		return false
+		return false, 0, "", "context_canceled"
 	}
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
-		code := strings.ToLower(apiErr.ErrorCode())
+		providerCode = apiErr.ErrorCode()
+		code := strings.ToLower(providerCode)
 		switch {
 		case strings.Contains(code, "throttl"), strings.Contains(code, "timeout"), strings.Contains(code, "unavailable"), strings.Contains(code, "internal"):
-			return true
-		case strings.Contains(code, "reject"), strings.Contains(code, "invalid"), strings.Contains(code, "notverified"), strings.Contains(code, "configuration"):
-			return false
+			return true, 451, "4.3.0", providerCode
+		case strings.Contains(code, "too-many-requests"), strings.Contains(code, "toomanyrequests"):
+			return true, 421, "4.7.0", providerCode
+		case strings.Contains(code, "reject"), strings.Contains(code, "invalid"), strings.Contains(code, "notverified"), strings.Contains(code, "configuration"), strings.Contains(code, "accessdenied"), strings.Contains(code, "sendingpaused"):
+			return false, 554, "5.7.1", providerCode
 		}
 	}
-	return true
+	return true, 451, "4.3.0", providerCode
 }

@@ -9,9 +9,14 @@ import (
 	"github.com/google/uuid"
 )
 
+var ErrBatchRequestConflict = errors.New("batch idempotency key was already used with a different request")
+
 type DeliveryError struct {
-	Err       error
-	Retryable bool
+	Err                error
+	Retryable          bool
+	SMTPCode           int
+	EnhancedStatusCode string
+	ProviderCode       string
 }
 
 func (e *DeliveryError) Error() string {
@@ -29,10 +34,28 @@ func (e *DeliveryError) Unwrap() error {
 }
 
 func NewDeliveryError(err error, retryable bool) error {
+	return NewDeliveryErrorWithDetails(err, retryable, 0, "", "")
+}
+
+func NewDeliveryErrorWithDetails(err error, retryable bool, smtpCode int, enhancedStatusCode, providerCode string) error {
 	if err == nil {
 		return fmt.Errorf("email delivery failed")
 	}
-	return &DeliveryError{Err: err, Retryable: retryable}
+	return &DeliveryError{
+		Err:                err,
+		Retryable:          retryable,
+		SMTPCode:           smtpCode,
+		EnhancedStatusCode: enhancedStatusCode,
+		ProviderCode:       providerCode,
+	}
+}
+
+func DeliveryErrorDetails(err error) (*DeliveryError, bool) {
+	var deliveryErr *DeliveryError
+	if !errors.As(err, &deliveryErr) || deliveryErr == nil {
+		return nil, false
+	}
+	return deliveryErr, true
 }
 
 func IsRetryableDeliveryError(err error) bool {
@@ -58,6 +81,7 @@ type EmailRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	DeleteForTeam(ctx context.Context, teamID, id uuid.UUID) error
 	AddEvent(ctx context.Context, event *EmailEvent) error
+	AddEventWithDeliveries(ctx context.Context, event *EmailEvent, deliveries []*WebhookDelivery) error
 	GetEvents(ctx context.Context, emailID uuid.UUID) ([]EmailEvent, error)
 	GetEventsForTeam(ctx context.Context, teamID, emailID uuid.UUID) ([]EmailEvent, error)
 }
@@ -65,6 +89,14 @@ type EmailRepository interface {
 type SuppressionRepository interface {
 	Upsert(ctx context.Context, suppression *Suppression) error
 	GetByEmails(ctx context.Context, teamID uuid.UUID, emails []string) ([]Suppression, error)
+}
+
+type BatchRepository interface {
+	Ensure(ctx context.Context, teamID uuid.UUID, key, requestHash string) (created bool, err error)
+}
+
+type DashboardRepository interface {
+	GetSnapshot(ctx context.Context, teamID uuid.UUID) (*DashboardSnapshot, error)
 }
 
 type TeamRepository interface {
@@ -92,6 +124,7 @@ type ContactRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*Contact, error)
 	GetByIDForTeam(ctx context.Context, teamID, id uuid.UUID) (*Contact, error)
 	GetByEmail(ctx context.Context, teamID uuid.UUID, email string) (*Contact, error)
+	GetUnsubscribedByEmails(ctx context.Context, teamID uuid.UUID, emails []string) ([]string, error)
 	List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*ContactListResponse, error)
 	Update(ctx context.Context, contact *Contact) error
 	UpdateForTeam(ctx context.Context, contact *Contact) error
@@ -161,6 +194,8 @@ type EmailQueue interface {
 	Dequeue(ctx context.Context) (string, error)
 	Ack(ctx context.Context, emailID string) error
 	Requeue(ctx context.Context, emailID string, countAttempt bool) error
+	ListDead(ctx context.Context, limit int) ([]string, error)
+	ReplayDead(ctx context.Context, emailID string) error
 	Recover(ctx context.Context) error
 }
 

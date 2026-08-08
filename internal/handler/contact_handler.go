@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -238,6 +239,14 @@ func (h *ContactHandler) ImportCSV(w http.ResponseWriter, r *http.Request) {
 			if name != "" {
 				contact.LastName = &name
 			}
+		}
+		if idx, ok := colIndex["subscribed"]; ok && idx < len(row) && strings.TrimSpace(row[idx]) != "" {
+			subscribed, parseErr := strconv.ParseBool(strings.TrimSpace(row[idx]))
+			if parseErr != nil {
+				writeError(w, "csv subscribed values must be true or false", http.StatusBadRequest)
+				return
+			}
+			contact.Subscribed = &subscribed
 		}
 
 		contacts = append(contacts, contact)

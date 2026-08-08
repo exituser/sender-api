@@ -134,7 +134,7 @@ func (s *ContactService) ImportCSV(ctx context.Context, teamID uuid.UUID, contac
 			Email:      req.Email,
 			FirstName:  req.FirstName,
 			LastName:   req.LastName,
-			Subscribed: true,
+			Subscribed: requestSubscribed(req),
 			Properties: req.Properties,
 		}
 		created = append(created, contact)
@@ -146,4 +146,11 @@ func (s *ContactService) ImportCSV(ctx context.Context, teamID uuid.UUID, contac
 
 	s.logger.Info("contacts imported", "team_id", teamID, "count", len(created))
 	return len(created), nil
+}
+
+func requestSubscribed(req *domain.CreateContactRequest) bool {
+	if req != nil && req.Subscribed != nil {
+		return *req.Subscribed
+	}
+	return true
 }

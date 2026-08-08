@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -41,6 +42,7 @@ var ErrBatchIdempotencyKeyRequired = errors.New("Idempotency-Key is required for
 var ErrDailyRecipientLimit = errors.New("daily recipient limit exceeded")
 var ErrUsageUnavailable = errors.New("usage limiter unavailable")
 var ErrRecipientSuppressed = errors.New("recipient is suppressed")
+var ErrRecipientUnsubscribed = errors.New("recipient is unsubscribed")
 var ErrEmailAccepted = errors.New("email was accepted by the provider but could not be fully persisted")
 
 type providerAcceptedEmailRepository interface {
@@ -53,13 +55,15 @@ type EmailService struct {
 	queue           domain.EmailQueue
 	sender          domain.EmailSender
 	webhookRepo     domain.WebhookRepository
-	deliveryRepo    domain.WebhookDeliveryRepository
 	suppressionRepo domain.SuppressionRepository
+	contactRepo     domain.ContactRepository
 	teamRepo        domain.TeamRepository
+	batchRepo       domain.BatchRepository
 	logger          *slog.Logger
 	usageLimiter    domain.UsageLimiter
 	dailyLimit      int
 	planLimits      map[domain.Plan]int
+	unsubscribe     *UnsubscribeService
 }
 
 func (s *EmailService) SetUsageLimiter(limiter domain.UsageLimiter, dailyLimit int) {
@@ -73,7 +77,7 @@ func NewEmailService(
 	queue domain.EmailQueue,
 	sender domain.EmailSender,
 	webhookRepo domain.WebhookRepository,
-	deliveryRepo domain.WebhookDeliveryRepository,
+	_ domain.WebhookDeliveryRepository,
 	logger *slog.Logger,
 	suppressionRepos ...domain.SuppressionRepository,
 ) *EmailService {
@@ -90,7 +94,6 @@ func NewEmailService(
 		queue:           queue,
 		sender:          sender,
 		webhookRepo:     webhookRepo,
-		deliveryRepo:    deliveryRepo,
 		suppressionRepo: suppressionRepo,
 		logger:          logger,
 	}
@@ -105,10 +108,22 @@ func (s *EmailService) SetPlanResolver(teamRepo domain.TeamRepository, freeLimit
 	}
 }
 
+func (s *EmailService) SetBatchRepository(repo domain.BatchRepository) {
+	s.batchRepo = repo
+}
+
 // SetSuppressionRepository enables bounce and complaint suppression for
 // existing composition roots without requiring constructor-call changes.
 func (s *EmailService) SetSuppressionRepository(repo domain.SuppressionRepository) {
 	s.suppressionRepo = repo
+}
+
+func (s *EmailService) SetContactRepository(repo domain.ContactRepository) {
+	s.contactRepo = repo
+}
+
+func (s *EmailService) SetUnsubscribeService(unsubscribe *UnsubscribeService) {
+	s.unsubscribe = unsubscribe
 }
 
 func (s *EmailService) Send(ctx context.Context, teamID uuid.UUID, req *domain.SendEmailRequest) (*domain.EmailResponse, error) {
@@ -124,6 +139,14 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 	if req == nil {
 		return nil, false, fmt.Errorf("email request is required")
 	}
+	category := req.Category
+	if category == "" {
+		category = domain.EmailCategoryTransactional
+	}
+	if category != domain.EmailCategoryTransactional && category != domain.EmailCategoryMarketing {
+		return nil, false, fmt.Errorf("category must be transactional or marketing")
+	}
+	req.Category = category
 	req.From = domain.NormalizeEmail(req.From)
 	if len(req.To) == 0 {
 		return nil, false, fmt.Errorf("at least one recipient is required")
@@ -136,6 +159,9 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 	}
 	if len(req.Subject) > 998 {
 		return nil, false, fmt.Errorf("subject is too long")
+	}
+	if !utf8.ValidString(req.Subject) || !utf8.ValidString(req.HTML) || !utf8.ValidString(req.Text) {
+		return nil, false, fmt.Errorf("email content must be valid UTF-8")
 	}
 	if req.HTML == "" && req.Text == "" {
 		return nil, false, fmt.Errorf("html or text body is required")
@@ -154,11 +180,23 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 	if err != nil || configuredDomain == nil || configuredDomain.Status != domain.DomainStatusVerified {
 		return nil, false, fmt.Errorf("from domain is not verified for this team")
 	}
+	if category == domain.EmailCategoryMarketing {
+		if len(req.To)+len(req.CC)+len(req.BCC) != 1 {
+			return nil, false, fmt.Errorf("marketing emails must have exactly one recipient")
+		}
+		if s.unsubscribe == nil {
+			return nil, false, fmt.Errorf("marketing unsubscribe is not configured")
+		}
+		if configuredDomain.DMARCStatus != "verified" {
+			return nil, false, fmt.Errorf("marketing emails require a verified DMARC policy")
+		}
+	}
+	requestHash := ""
 	if idempotencyKey != "" {
 		if len(idempotencyKey) > 255 || strings.ContainsAny(idempotencyKey, "\r\n") {
 			return nil, false, fmt.Errorf("invalid idempotency key")
 		}
-		requestHash := hashSendRequest(req)
+		requestHash = hashSendRequest(req)
 		existing, lookupErr := s.emailRepo.GetByIdempotencyKey(ctx, teamID, idempotencyKey)
 		if lookupErr == nil && existing != nil {
 			if existing.IdempotencyHash == nil || *existing.IdempotencyHash != requestHash {
@@ -176,14 +214,8 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 			return nil, false, fmt.Errorf("invalid recipient address: %s", address)
 		}
 	}
-	if s.suppressionRepo != nil {
-		suppressions, err := s.suppressionRepo.GetByEmails(ctx, teamID, recipients)
-		if err != nil {
-			return nil, false, fmt.Errorf("check recipient suppressions: %w", err)
-		}
-		if len(suppressions) > 0 {
-			return nil, false, fmt.Errorf("%w: %s (%s)", ErrRecipientSuppressed, suppressions[0].Email, suppressions[0].Reason)
-		}
+	if err := s.checkRecipientSuppression(ctx, teamID, recipients); err != nil {
+		return nil, false, err
 	}
 	for _, address := range req.ReplyTo {
 		if !validator.IsValidEmail(address) {
@@ -221,14 +253,24 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 	}
 	for name, value := range req.Headers {
 		lowerName := strings.ToLower(strings.TrimSpace(name))
-		if name == "" || len(name) > 100 || strings.TrimSpace(name) != name ||
-			strings.ContainsAny(name, "\r\n:") || strings.ContainsAny(value, "\r\n") || len(value) > 2000 {
+		if name == "" || len(name) > 100 || strings.TrimSpace(name) != name || !isRFCHeaderFieldName(name) ||
+			!utf8.ValidString(name) || !utf8.ValidString(value) || strings.ContainsAny(name, "\r\n:") ||
+			strings.ContainsAny(value, "\r\n") || len(value) > 998 {
 			return nil, false, fmt.Errorf("invalid custom header")
 		}
 		switch lowerName {
-		case "from", "to", "cc", "bcc", "subject", "reply-to", "content-type", "mime-version":
+		case "from", "to", "cc", "bcc", "subject", "reply-to", "sender", "date", "message-id", "return-path", "received", "content-type", "content-transfer-encoding", "content-disposition", "mime-version", "list-unsubscribe", "list-unsubscribe-post":
 			return nil, false, fmt.Errorf("reserved custom header: %s", name)
 		}
+	}
+	headers := cloneHeaders(req.Headers)
+	if category == domain.EmailCategoryMarketing {
+		unsubscribeURL, err := s.unsubscribe.LandingURL(teamID, req.To[0])
+		if err != nil {
+			return nil, false, fmt.Errorf("create unsubscribe link: %w", err)
+		}
+		headers["List-Unsubscribe"] = "<" + unsubscribeURL + ">"
+		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 	}
 	totalSize := len(req.HTML) + len(req.Text)
 	for _, attachment := range req.Attachments {
@@ -268,8 +310,7 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 	}()
 	var idempotencyHash *string
 	if idempotencyKey != "" {
-		hash := hashSendRequest(req)
-		idempotencyHash = &hash
+		idempotencyHash = &requestHash
 	}
 
 	email := &domain.Email{
@@ -280,6 +321,7 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 		CC:          req.CC,
 		BCC:         req.BCC,
 		Subject:     req.Subject,
+		Category:    category,
 		HTML:        req.HTML,
 		Text:        req.Text,
 		ReplyTo:     req.ReplyTo,
@@ -287,7 +329,7 @@ func (s *EmailService) send(ctx context.Context, teamID uuid.UUID, req *domain.S
 		Status:      domain.EmailStatusQueued,
 		Tags:        req.Tags,
 		Metadata:    req.Metadata,
-		Headers:     req.Headers,
+		Headers:     headers,
 		IdempotencyKey: func() *string {
 			if idempotencyKey == "" {
 				return nil
@@ -424,6 +466,13 @@ func (s *EmailService) ProcessFromQueue(ctx context.Context, emailID string) err
 		return fmt.Errorf("%w: email was claimed or cancelled by another worker", ErrEmailNotQueued)
 	}
 	s.recordEvent(ctx, id, "email.sending", nil)
+	if err := s.checkRecipientSuppression(ctx, email.TeamID, normalizeEmailRecipients(email)); err != nil {
+		if statusErr := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusFailed); statusErr != nil {
+			return fmt.Errorf("recipient suppression check failed: %w; failed to mark email failed: %v", err, statusErr)
+		}
+		s.recordEvent(ctx, id, "email.failed", map[string]string{"reason": err.Error()})
+		return fmt.Errorf("%w: %v", ErrEmailDeliveryFailed, err)
+	}
 
 	sendCtx, cancelSend := context.WithTimeout(ctx, 30*time.Second)
 	providerMessageID, err := s.sender.Send(sendCtx, email)
@@ -433,14 +482,13 @@ func (s *EmailService) ProcessFromQueue(ctx context.Context, emailID string) err
 			if statusErr := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusQueued); statusErr != nil {
 				return fmt.Errorf("retryable send failed: %w; failed to restore queued status: %v", err, statusErr)
 			}
-			s.recordEvent(ctx, id, "email.retrying", map[string]string{"reason": err.Error()})
+			s.recordEvent(ctx, id, "email.retrying", deliveryErrorEventData(err))
 			return fmt.Errorf("%w: %v", ErrEmailDeliveryRetryable, err)
 		}
 		if statusErr := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusFailed); statusErr != nil {
 			return fmt.Errorf("send failed: %w; failed to mark email failed: %v", err, statusErr)
 		}
-		eventID := s.recordEvent(ctx, id, "email.failed", map[string]string{"reason": err.Error()})
-		s.dispatchWebhooks(ctx, email.TeamID, eventID, "email.failed", email)
+		s.recordEventAndDispatch(ctx, email.TeamID, id, "email.failed", deliveryErrorEventData(err), email)
 		return fmt.Errorf("%w: %v", ErrEmailDeliveryFailed, err)
 	}
 	providerIDPersisted := true
@@ -454,8 +502,7 @@ func (s *EmailService) ProcessFromQueue(ctx context.Context, emailID string) err
 				s.logger.Error("failed to persist accepted provider message", "email_id", id, "error", err)
 				return ErrEmailAccepted
 			}
-			eventID := s.recordEvent(ctx, id, "email.sent", nil)
-			s.dispatchWebhooks(ctx, email.TeamID, eventID, "email.sent", email)
+			s.recordEventAndDispatch(ctx, email.TeamID, id, "email.sent", nil, email)
 			return nil
 		}
 		if err := s.emailRepo.SetProviderMessageID(ctx, id, providerMessageID); err != nil {
@@ -475,8 +522,7 @@ func (s *EmailService) ProcessFromQueue(ctx context.Context, emailID string) err
 	if !providerIDPersisted {
 		return ErrEmailAccepted
 	}
-	eventID := s.recordEvent(ctx, id, "email.sent", nil)
-	s.dispatchWebhooks(ctx, email.TeamID, eventID, "email.sent", email)
+	s.recordEventAndDispatch(ctx, email.TeamID, id, "email.sent", nil, email)
 
 	return nil
 }
@@ -492,6 +538,76 @@ func normalizeRecipients(req *domain.SendEmailRequest) []string {
 	req.CC = normalize(req.CC)
 	req.BCC = normalize(req.BCC)
 	return append(append(append([]string{}, req.To...), req.CC...), req.BCC...)
+}
+
+func cloneHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return make(map[string]string)
+	}
+	cloned := make(map[string]string, len(headers))
+	for key, value := range headers {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func isRFCHeaderFieldName(name string) bool {
+	for i := 0; i < len(name); i++ {
+		char := name[i]
+		if char < '!' || char > '~' || char == ':' {
+			return false
+		}
+	}
+	return name != ""
+}
+
+func deliveryErrorEventData(err error) map[string]any {
+	data := map[string]any{
+		"reason":    err.Error(),
+		"retryable": domain.IsRetryableDeliveryError(err),
+	}
+	if deliveryErr, ok := domain.DeliveryErrorDetails(err); ok {
+		if deliveryErr.SMTPCode != 0 {
+			data["smtp_code"] = deliveryErr.SMTPCode
+		}
+		if deliveryErr.EnhancedStatusCode != "" {
+			data["enhanced_status_code"] = deliveryErr.EnhancedStatusCode
+		}
+		if deliveryErr.ProviderCode != "" {
+			data["provider_code"] = deliveryErr.ProviderCode
+		}
+	}
+	return data
+}
+
+func normalizeEmailRecipients(email *domain.Email) []string {
+	recipients := append(append(append([]string{}, email.To...), email.CC...), email.BCC...)
+	for index, recipient := range recipients {
+		recipients[index] = domain.NormalizeEmail(recipient)
+	}
+	return recipients
+}
+
+func (s *EmailService) checkRecipientSuppression(ctx context.Context, teamID uuid.UUID, recipients []string) error {
+	if s.suppressionRepo != nil {
+		suppressions, err := s.suppressionRepo.GetByEmails(ctx, teamID, recipients)
+		if err != nil {
+			return fmt.Errorf("check recipient suppressions: %w", err)
+		}
+		if len(suppressions) > 0 {
+			return fmt.Errorf("%w: %s (%s)", ErrRecipientSuppressed, suppressions[0].Email, suppressions[0].Reason)
+		}
+	}
+	if s.contactRepo != nil {
+		unsubscribed, err := s.contactRepo.GetUnsubscribedByEmails(ctx, teamID, recipients)
+		if err != nil {
+			return fmt.Errorf("check contact subscriptions: %w", err)
+		}
+		if len(unsubscribed) > 0 {
+			return fmt.Errorf("%w: %s", ErrRecipientUnsubscribed, unsubscribed[0])
+		}
+	}
+	return nil
 }
 
 func (s *EmailService) MarkFailedFromQueue(ctx context.Context, emailID, reason string) error {
@@ -510,6 +626,43 @@ func (s *EmailService) RecoverSending(ctx context.Context) error {
 	return s.emailRepo.ResetSendingToQueued(ctx)
 }
 
+func (s *EmailService) ListDeadLetters(ctx context.Context, teamID uuid.UUID, limit int) ([]domain.DeadLetter, error) {
+	ids, err := s.queue.ListDead(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domain.DeadLetter, 0, len(ids))
+	for _, rawID := range ids {
+		id, parseErr := uuid.Parse(rawID)
+		if parseErr != nil {
+			continue
+		}
+		email, getErr := s.emailRepo.GetByIDForTeam(ctx, teamID, id)
+		if getErr != nil {
+			continue
+		}
+		result = append(result, domain.DeadLetter{ID: email.ID.String(), Status: email.Status})
+	}
+	return result, nil
+}
+
+func (s *EmailService) ReplayDeadLetter(ctx context.Context, teamID, emailID uuid.UUID) error {
+	if _, err := s.emailRepo.GetByIDForTeam(ctx, teamID, emailID); err != nil {
+		return err
+	}
+	if err := s.queue.ReplayDead(ctx, emailID.String()); err != nil {
+		return err
+	}
+	if err := s.emailRepo.UpdateStatus(ctx, emailID, domain.EmailStatusQueued); err != nil {
+		// The queue item is now pending, but a worker must not send a row that
+		// still has an unknown terminal state. Keep it failed until an operator
+		// repairs the database and replays it again.
+		return err
+	}
+	s.recordEvent(ctx, emailID, "email.requeued", map[string]string{"reason": "manual_dead_letter_replay"})
+	return nil
+}
+
 func (s *EmailService) recordEvent(ctx context.Context, emailID uuid.UUID, eventName string, data any) uuid.UUID {
 	eventID := uuid.New()
 	dataJSON := []byte("null")
@@ -523,40 +676,47 @@ func (s *EmailService) recordEvent(ctx context.Context, emailID uuid.UUID, event
 		EmailID:   emailID,
 		Event:     eventName,
 		Timestamp: time.Now().UTC(),
-		Data:      dataJSON,
+		Data:      json.RawMessage(dataJSON),
 	}); err != nil {
 		s.logger.Error("failed to record email event", "email_id", emailID, "event", eventName, "error", err)
 	}
 	return eventID
 }
 
-func (s *EmailService) dispatchWebhooks(ctx context.Context, teamID, eventID uuid.UUID, event string, payload any) {
-	if s.deliveryRepo == nil || s.webhookRepo == nil {
-		s.logger.Error("webhook delivery repository is not configured", "event", event)
-		return
+func (s *EmailService) recordEventAndDispatch(ctx context.Context, teamID, emailID uuid.UUID, eventName string, data, payload any) uuid.UUID {
+	eventID := uuid.New()
+	if s.webhookRepo == nil {
+		return s.recordEvent(ctx, emailID, eventName, data)
 	}
-	webhooks, err := s.webhookRepo.GetByEvent(ctx, teamID, event)
-	if err != nil {
-		s.logger.Error("failed to get webhooks", "error", err)
-		return
-	}
-
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		s.logger.Error("failed to marshal webhook payload", "event", event, "error", err)
-		return
-	}
-	for _, wh := range webhooks {
-		if err := s.deliveryRepo.CreateDelivery(ctx, &domain.WebhookDelivery{
-			ID:        uuid.New(),
-			WebhookID: wh.ID,
-			EventID:   eventID,
-			Event:     event,
-			Payload:   payloadJSON,
-		}); err != nil {
-			s.logger.Error("failed to enqueue webhook delivery", "webhook_id", wh.ID, "event", event, "error", err)
+	dataJSON := []byte("null")
+	if data != nil {
+		if encoded, err := json.Marshal(data); err == nil {
+			dataJSON = encoded
 		}
 	}
+	event := &domain.EmailEvent{
+		ID: eventID, EmailID: emailID, Event: eventName, Timestamp: time.Now().UTC(), Data: dataJSON,
+	}
+	webhooks, err := s.webhookRepo.GetByEvent(ctx, teamID, eventName)
+	if err != nil {
+		s.logger.Error("failed to get webhooks", "error", err, "event", eventName)
+		return s.recordEvent(ctx, emailID, eventName, data)
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		s.logger.Error("failed to marshal webhook payload", "event", eventName, "error", err)
+		return s.recordEvent(ctx, emailID, eventName, data)
+	}
+	deliveries := make([]*domain.WebhookDelivery, 0, len(webhooks))
+	for _, webhook := range webhooks {
+		deliveries = append(deliveries, &domain.WebhookDelivery{
+			ID: uuid.New(), WebhookID: webhook.ID, EventID: eventID, Event: eventName, Payload: payloadJSON,
+		})
+	}
+	if err := s.emailRepo.AddEventWithDeliveries(ctx, event, deliveries); err != nil {
+		s.logger.Error("failed to record event and enqueue webhook deliveries", "email_id", emailID, "event", eventName, "error", err)
+	}
+	return eventID
 }
 
 func (s *EmailService) BatchSend(ctx context.Context, teamID uuid.UUID, reqs []*domain.SendEmailRequest, batchKey string) ([]*domain.EmailResponse, error) {
@@ -569,6 +729,15 @@ func (s *EmailService) BatchSend(ctx context.Context, teamID uuid.UUID, reqs []*
 	}
 	if len(batchKey) > 255 || strings.ContainsAny(batchKey, "\r\n") {
 		return nil, fmt.Errorf("invalid idempotency key")
+	}
+	if s.batchRepo != nil {
+		_, err := s.batchRepo.Ensure(ctx, teamID, batchKey, hashBatchRequests(reqs))
+		if err != nil {
+			if errors.Is(err, domain.ErrBatchRequestConflict) {
+				return nil, ErrIdempotencyConflict
+			}
+			return nil, fmt.Errorf("check batch idempotency: %w", err)
+		}
 	}
 
 	var responses []*domain.EmailResponse
@@ -583,6 +752,12 @@ func (s *EmailService) BatchSend(ctx context.Context, teamID uuid.UUID, reqs []*
 		responses = append(responses, resp)
 	}
 	return responses, nil
+}
+
+func hashBatchRequests(reqs []*domain.SendEmailRequest) string {
+	payload, _ := json.Marshal(reqs)
+	hash := sha256.Sum256(payload)
+	return hex.EncodeToString(hash[:])
 }
 
 func batchItemIdempotencyKey(batchKey string, index int) string {

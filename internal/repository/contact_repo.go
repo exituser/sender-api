@@ -43,12 +43,43 @@ func (r *ContactRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Contac
 	return &c, nil
 }
 
+func (r *ContactRepo) GetUnsubscribedByEmails(ctx context.Context, teamID uuid.UUID, emails []string) ([]string, error) {
+	if len(emails) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT email
+		FROM contacts
+		WHERE team_id = $1 AND subscribed = false AND email = ANY($2)
+	`, teamID, emails)
+	if err != nil {
+		return nil, fmt.Errorf("query unsubscribed contacts: %w", err)
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		result = append(result, email)
+	}
+	return result, rows.Err()
+}
+
 func (r *ContactRepo) GetByIDForTeam(ctx context.Context, teamID, id uuid.UUID) (*domain.Contact, error) {
-	contact, err := r.GetByID(ctx, id)
-	if err != nil || contact.TeamID != teamID {
+	var c domain.Contact
+	var propsJSON []byte
+	err := r.db.QueryRow(ctx, `
+		SELECT id, team_id, email, first_name, last_name, subscribed, properties, created_at, updated_at
+		FROM contacts WHERE id = $1 AND team_id = $2
+	`, id, teamID).Scan(&c.ID, &c.TeamID, &c.Email, &c.FirstName, &c.LastName, &c.Subscribed, &propsJSON, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
 		return nil, fmt.Errorf("contact not found")
 	}
-	return contact, nil
+	_ = json.Unmarshal(propsJSON, &c.Properties)
+	return &c, nil
 }
 
 func (r *ContactRepo) GetByEmail(ctx context.Context, teamID uuid.UUID, email string) (*domain.Contact, error) {
@@ -63,6 +94,15 @@ func (r *ContactRepo) GetByEmail(ctx context.Context, teamID uuid.UUID, email st
 	}
 	_ = json.Unmarshal(propsJSON, &c.Properties)
 	return &c, nil
+}
+
+func (r *ContactRepo) SetSubscribedByEmail(ctx context.Context, teamID uuid.UUID, email string, subscribed bool) (bool, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE contacts
+		SET subscribed = $1, updated_at = NOW()
+		WHERE team_id = $2 AND email = $3
+	`, subscribed, teamID, domain.NormalizeEmail(email))
+	return tag.RowsAffected() == 1, err
 }
 
 func (r *ContactRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*domain.ContactListResponse, error) {

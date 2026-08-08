@@ -1,10 +1,10 @@
--- Compose initializes 001, 003, 004, 005, 006, 007, 008, and 009 directly for a convenient local stack.
--- Keep golang-migrate's bookkeeping aligned with that exact schema version.
+-- Compose initializes the complete schema for a convenient local stack.
+-- Keep migration bookkeeping aligned with the latest mounted migration.
 CREATE TABLE IF NOT EXISTS public.schema_migrations (
     version BIGINT NOT NULL PRIMARY KEY,
     dirty BOOLEAN NOT NULL
 );
 
 INSERT INTO public.schema_migrations (version, dirty)
-VALUES (9, false)
+VALUES (12, false)
 ON CONFLICT (version) DO UPDATE SET dirty = EXCLUDED.dirty;

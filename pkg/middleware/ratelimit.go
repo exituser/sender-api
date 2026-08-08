@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sender-api/sender-api/internal/auth"
@@ -22,7 +23,7 @@ func RateLimit(redisClient *redis.Client, scopes ...string) func(http.Handler) h
 			key := getRateLimitKeyForScope(ctx, rateLimitScope(scopes...))
 			limit := getLimitForPlan(ctx)
 
-			count, err := incrementRateLimit(ctx, redisClient, key)
+			count, retryAfter, err := incrementRateLimit(ctx, redisClient, key, limit)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -32,9 +33,10 @@ func RateLimit(redisClient *redis.Client, scopes ...string) func(http.Handler) h
 
 			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
 			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", max(0, limit-int(count))))
+			w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", retryAfter))
 
 			if int(count) > limit {
-				w.Header().Set("Retry-After", "1")
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", max(1, int(retryAfter))))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_, _ = fmt.Fprintf(w, `{"error":"rate limit exceeded"}`)
@@ -70,21 +72,35 @@ func rateLimitScope(scopes ...string) string {
 	return "api"
 }
 
-func incrementRateLimit(ctx context.Context, client *redis.Client, key string) (int64, error) {
-	const rateLimitWindowSeconds = 1
+func incrementRateLimit(ctx context.Context, client *redis.Client, key string, limit int) (int64, int64, error) {
+	const rateLimitWindowMilliseconds = 1000
 	const script = `
-		local current = redis.call('GET', KEYS[1])
-		if not current then
-			redis.call('SET', KEYS[1], 1, 'EX', ARGV[1])
-			return 1
+		local now = tonumber(ARGV[1])
+		local window = tonumber(ARGV[2])
+		local limit = tonumber(ARGV[3])
+		redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
+		local count = redis.call('ZCARD', KEYS[1])
+		if count >= limit then
+			local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+			local retry = window
+			if #oldest >= 2 then retry = math.max(1, oldest[2] + window - now) end
+			redis.call('PEXPIRE', KEYS[1], window + 1000)
+			return {count + 1, math.ceil(retry / 1000)}
 		end
-		local count = redis.call('INCR', KEYS[1])
-		if redis.call('TTL', KEYS[1]) < 0 then
-			redis.call('EXPIRE', KEYS[1], ARGV[1])
-		end
-		return count
+		local sequence = redis.call('INCR', KEYS[2])
+		redis.call('ZADD', KEYS[1], now, tostring(now) .. ':' .. tostring(sequence))
+		redis.call('PEXPIRE', KEYS[1], window + 1000)
+		redis.call('PEXPIRE', KEYS[2], window + 1000)
+		return {count + 1, 0}
 	`
-	return client.Eval(ctx, script, []string{key}, rateLimitWindowSeconds).Int64()
+	values, err := client.Eval(ctx, script, []string{key, key + ":sequence"}, time.Now().UnixMilli(), rateLimitWindowMilliseconds, limit).Int64Slice()
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(values) != 2 {
+		return 0, 0, fmt.Errorf("unexpected rate limiter response")
+	}
+	return values[0], values[1], nil
 }
 
 func getLimitForPlan(ctx context.Context) int {

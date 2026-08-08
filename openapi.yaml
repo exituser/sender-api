@@ -8,6 +8,32 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /dashboard/summary:
+    get:
+      summary: Get the current workspace overview
+      parameters:
+        - $ref: '#/components/parameters/TeamID'
+      responses:
+        '200': { description: Workspace overview, content: { application/json: { schema: { $ref: '#/components/schemas/DashboardSummary' } } } }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /unsubscribe/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Show the unsubscribe confirmation page
+      security: []
+      responses:
+        '200': { description: Confirmation page, content: { text/html: {} } }
+    post:
+      summary: One-click unsubscribe
+      security: []
+      responses:
+        '204': { description: Unsubscribed }
+        '400': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /emails:
     get:
       summary: List emails
@@ -48,6 +74,24 @@ paths:
         '207': { $ref: '#/components/responses/JSON' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /emails/dead-letters:
+    get:
+      summary: List failed queue items for the current team
+      parameters:
+        - $ref: '#/components/parameters/TeamID'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': { $ref: '#/components/responses/JSON' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /emails/dead-letters/{id}/replay:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/TeamID'
+    post:
+      summary: Replay a failed queue item
+      responses:
+        '202': { $ref: '#/components/responses/JSON' }
+        '400': { $ref: '#/components/responses/Error' }
   /emails/{id}:
     parameters:
       - $ref: '#/components/parameters/ID'
@@ -343,6 +387,7 @@ components:
         cc: { type: array, items: { type: string, format: email } }
         bcc: { type: array, items: { type: string, format: email } }
         subject: { type: string, maxLength: 998 }
+        category: { type: string, enum: [transactional, marketing], default: transactional, description: Marketing messages require one recipient, verified DMARC, and automatically receive RFC 2369/8058 unsubscribe headers. }
         text: { type: string }
         html: { type: string }
         reply_to: { type: array, items: { type: string, format: email } }
@@ -351,6 +396,18 @@ components:
         tags: { type: array, items: { type: object } }
         attachments: { type: array, items: { type: object } }
         scheduled_at: { type: string, format: date-time }
+    DashboardSummary:
+      type: object
+      required: [status, status_label, alerts, domains, delivery, audience, webhooks, activity]
+      properties:
+        status: { type: string, enum: [ready, attention, action_needed] }
+        status_label: { type: string }
+        alerts: { type: array, items: { type: object } }
+        domains: { type: array, items: { type: object } }
+        delivery: { type: object }
+        audience: { type: object }
+        webhooks: { type: object }
+        activity: { type: array, items: { type: object } }
     EmailResponse:
       type: object
       required: [id]

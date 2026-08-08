@@ -29,7 +29,7 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/emails");
+    router.push("/dashboard");
   };
 
   return (

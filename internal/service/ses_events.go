@@ -47,12 +47,13 @@ func (s *EmailService) ProcessProviderEvent(ctx context.Context, providerMessage
 		}
 	}
 
-	if err := s.emailRepo.AddEvent(ctx, &domain.EmailEvent{
-		ID:        eventID,
-		EmailID:   email.ID,
-		Event:     eventName,
-		Timestamp: time.Now().UTC(),
-		Data:      data,
+	if statusChanged || !hasStatus {
+		dataJSON := data
+		if err := s.recordProviderEventAndDispatch(ctx, email.TeamID, email.ID, eventID, eventName, dataJSON, email); err != nil {
+			return err
+		}
+	} else if err := s.emailRepo.AddEvent(ctx, &domain.EmailEvent{
+		ID: eventID, EmailID: email.ID, Event: eventName, Timestamp: time.Now().UTC(), Data: data,
 	}); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -60,9 +61,39 @@ func (s *EmailService) ProcessProviderEvent(ctx context.Context, providerMessage
 		}
 		return fmt.Errorf("record provider event: %w", err)
 	}
+	return nil
+}
 
-	if statusChanged || !hasStatus {
-		s.dispatchWebhooks(ctx, email.TeamID, eventID, eventName, email)
+func (s *EmailService) recordProviderEventAndDispatch(ctx context.Context, teamID, emailID, eventID uuid.UUID, eventName string, data json.RawMessage, payload any) error {
+	if s.webhookRepo == nil {
+		if err := s.emailRepo.AddEvent(ctx, &domain.EmailEvent{ID: eventID, EmailID: emailID, Event: eventName, Timestamp: time.Now().UTC(), Data: data}); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return nil
+			}
+			return fmt.Errorf("record provider event: %w", err)
+		}
+		return nil
+	}
+
+	webhooks, err := s.webhookRepo.GetByEvent(ctx, teamID, eventName)
+	if err != nil {
+		return fmt.Errorf("get provider event webhooks: %w", err)
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal provider event webhook: %w", err)
+	}
+	deliveries := make([]*domain.WebhookDelivery, 0, len(webhooks))
+	for _, webhook := range webhooks {
+		deliveries = append(deliveries, &domain.WebhookDelivery{ID: uuid.New(), WebhookID: webhook.ID, EventID: eventID, Event: eventName, Payload: payloadJSON})
+	}
+	if err := s.emailRepo.AddEventWithDeliveries(ctx, &domain.EmailEvent{ID: eventID, EmailID: emailID, Event: eventName, Timestamp: time.Now().UTC(), Data: data}, deliveries); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil
+		}
+		return fmt.Errorf("record provider event and webhook deliveries: %w", err)
 	}
 	return nil
 }

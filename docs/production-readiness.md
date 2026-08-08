@@ -29,6 +29,22 @@ provider, DNS, TLS, backups, and a real smoke test are verified together.
 - Bounce and complaint callbacks create team-scoped suppressions before a new
   send is queued; provider-accepted sends are acknowledged as terminal when
   persistence cannot be completed, preventing an automatic duplicate send.
+- Unsubscribed contacts are rejected both when queued and again immediately
+  before provider submission; CSV imports preserve an explicit `subscribed`
+  column. Outbound domain verification does not require changing existing MX
+  records; MX verification remains an inbound-only requirement.
+- Marketing messages are single-recipient, require a verified DMARC policy, and
+  receive RFC 2369/8058 one-click unsubscribe headers. The public GET endpoint
+  is non-mutating to avoid link-scanner unsubscribes; POST records a durable
+  team-scoped unsubscribe suppression.
+- SES delivery failures expose RFC 3463-style normalized status metadata in
+  event payloads while preserving the original AWS provider code.
+- Email events and webhook deliveries are committed in one database
+  transaction. Failed email queue items are bounded, team-scoped, and can be
+  replayed by an owner or admin through the API.
+- Batch manifests prevent reusing one batch idempotency key with a different
+  payload. Production upgrades use `scripts/migrate.sh`, which applies pending
+  migrations and fails closed on a dirty schema state.
 - Team invitations are single-use, email-bound, seven-day tokens; Stripe
   checkout, portal sessions, webhook signature verification, and plan-specific
   recipient limits are implemented but remain optional integrations. Stripe

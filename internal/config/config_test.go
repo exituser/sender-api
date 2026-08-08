@@ -78,6 +78,13 @@ func TestValidateRequiresSESConfigSetForOutboundEvents(t *testing.T) {
 	}
 }
 
+func TestValidateCanRequireOutboundSESEvents(t *testing.T) {
+	cfg := &Config{CORSOrigins: "http://localhost:3000", RequireOutboundSESEvents: true}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected outbound SES event topic requirement")
+	}
+}
+
 func TestValidateProductionRejectsHTTPOrigin(t *testing.T) {
 	cfg := &Config{Env: "production", CORSOrigins: "http://app.example.com"}
 	if err := cfg.Validate(); err == nil {
@@ -180,5 +187,23 @@ func TestValidateRejectsInvalidInboundVisibilityTimeout(t *testing.T) {
 	cfg := &Config{CORSOrigins: "http://localhost:3000", InboundVisibilityTimeoutSeconds: 43201}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected invalid inbound visibility timeout to be rejected")
+	}
+}
+
+func TestValidateRequiresUnsubscribeSettingsTogether(t *testing.T) {
+	cfg := &Config{CORSOrigins: "http://localhost:3000", PublicAPIURL: "http://localhost:8080"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unsubscribe settings to be configured together")
+	}
+}
+
+func TestValidateAcceptsUnsubscribeSettings(t *testing.T) {
+	cfg := &Config{
+		CORSOrigins:              "http://localhost:3000",
+		PublicAPIURL:             "http://localhost:8080",
+		UnsubscribeSigningSecret: "0123456789abcdef0123456789abcdef",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected unsubscribe settings to validate: %v", err)
 	}
 }

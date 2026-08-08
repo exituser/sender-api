@@ -7,7 +7,7 @@ export async function GET(request: Request) {
   const requestedNext = searchParams.get("next");
   const nextPath = requestedNext && requestedNext.startsWith("/") && !requestedNext.startsWith("//") && !requestedNext.includes("\\")
     ? requestedNext
-    : "/emails";
+    : "/dashboard";
 
   if (code) {
     const supabase = await createClient();

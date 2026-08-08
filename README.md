@@ -94,14 +94,32 @@ item IDs and the failed item error.
 
 ### Emails
 
+Email requests are `transactional` by default. Set `category` to `marketing`
+for consent-based campaigns; those messages must have exactly one recipient,
+the sender domain must have a valid DMARC policy, and the API adds RFC 2369 / RFC
+8058 `List-Unsubscribe` and one-click headers. Configure `PUBLIC_API_URL` and
+`UNSUBSCRIBE_SIGNING_SECRET` to enable public unsubscribe links. The GET link
+only shows a confirmation page; the POST action performs the unsubscribe.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| `GET/POST` | `/unsubscribe/:token` | Public confirmation and RFC 8058 one-click unsubscribe |
 | `POST` | `/emails` | Send email |
 | `POST` | `/emails/batch` | Batch send (max 100) |
+| `GET` | `/emails/dead-letters` | List failed queue items for the team |
+| `POST` | `/emails/dead-letters/:id/replay` | Replay a failed queue item |
 | `GET` | `/emails` | List emails |
 | `GET` | `/emails/:id` | Get email |
 | `GET` | `/emails/:id/events` | Get email events |
 | `DELETE` | `/emails/:id` | Cancel scheduled email |
+
+### Overview
+
+`GET /api/v1/dashboard/summary` returns a team-scoped overview for the
+Dashboard: actions that need attention, sender setup, recent delivery numbers,
+audience protection, app connections, and recent activity. It intentionally
+returns customer-facing explanations instead of DNS, SMTP, AWS, or provider
+error terminology.
 
 ### Teams
 
@@ -201,12 +219,20 @@ This integration is optional. When `OUTBOUND_SES_TOPIC_ARN` is empty, the SES
 event callback is not registered. When it is set, the exact topic ARN is still
 checked, so disabling the integration does not weaken verification for enabled
 callbacks.
+Set `REQUIRE_OUTBOUND_SES_EVENTS=true` when delivery, bounce, and complaint
+callbacks are a production requirement; readiness then fails closed until the
+topic is configured.
 
 Bounce and complaint callbacks create a suppression for the affected recipient
 within the owning team. Suppressed recipients are rejected before quota
 reservation and queueing. Stripe billing is optional; when enabled, free/pro/
 scale limits are selected from the verified subscription status rather than
 from a user-controlled plan field.
+
+SES/AWS failures are retained in failed/retrying event payloads with normalized
+`smtp_code`, `enhanced_status_code`, `provider_code`, and `retryable` fields.
+These are RFC 3463-style provider metadata; SES itself returns AWS error codes,
+not SMTP wire responses.
 
 In production, user webhooks must use HTTPS. HTTP webhook URLs remain available
 only for local development, and private/link-local targets are rejected in all
@@ -267,16 +293,20 @@ invites, `008_ses_domain_identity` stores SES verification and DKIM records,
 and `009_billing_state` stores Stripe subscription state and plan limits.
 `010_billing_event_ordering` adds Stripe event deduplication and monotonic
 state application; unknown Stripe prices fail closed to the free plan.
+`011_batch_manifest` prevents a batch idempotency key from being reused with a
+different payload. `012_marketing_unsubscribe` adds email categories and
+unsubscribe suppressions.
 Apply all migrations with:
 
 ```bash
 DATABASE_URL=postgresql://supabase_admin:postgres@localhost:5432/sender_api make migrate-up
 ```
 
-The Compose database is initialized from migrations `001`, `003` through `009`;
-its `schema_migrations` marker is set to version 9. Use the migration command for
-an already-existing database. Compose initialization only runs for a new
-database volume. Existing installations with
+The migration command is the single upgrade path for existing and new
+databases. Compose initializes a fresh volume through migration 012 and marks
+it clean at version 12; existing installations must run the command during
+deployment. Compose initialization only runs for a new database volume.
+Existing installations with
 duplicate normalized domains or nullable tenant IDs must be reviewed before
 applying `003_hardening`; the migration fails rather than silently rewriting
 them.

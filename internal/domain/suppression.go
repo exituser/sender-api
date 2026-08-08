@@ -10,8 +10,9 @@ import (
 type SuppressionReason string
 
 const (
-	SuppressionReasonBounce    SuppressionReason = "bounce"
-	SuppressionReasonComplaint SuppressionReason = "complaint"
+	SuppressionReasonBounce      SuppressionReason = "bounce"
+	SuppressionReasonComplaint   SuppressionReason = "complaint"
+	SuppressionReasonUnsubscribe SuppressionReason = "unsubscribe"
 )
 
 type Suppression struct {

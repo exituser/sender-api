@@ -38,11 +38,15 @@ func (r *WebhookRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Webhoo
 }
 
 func (r *WebhookRepo) GetByIDForTeam(ctx context.Context, teamID, id uuid.UUID) (*domain.Webhook, error) {
-	w, err := r.GetByID(ctx, id)
-	if err != nil || w.TeamID != teamID {
+	var w domain.Webhook
+	err := r.db.QueryRow(ctx, `
+		SELECT id, team_id, url, events, secret, active, created_at
+		FROM webhooks WHERE id = $1 AND team_id = $2
+	`, id, teamID).Scan(&w.ID, &w.TeamID, &w.URL, &w.Events, &w.Secret, &w.Active, &w.CreatedAt)
+	if err != nil {
 		return nil, fmt.Errorf("webhook not found")
 	}
-	return w, nil
+	return &w, nil
 }
 
 func (r *WebhookRepo) List(ctx context.Context, teamID uuid.UUID) (*domain.WebhookListResponse, error) {

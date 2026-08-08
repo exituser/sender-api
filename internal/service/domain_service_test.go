@@ -67,3 +67,34 @@ func TestContainsInboundMX(t *testing.T) {
 		})
 	}
 }
+
+func TestOutboundDomainVerificationDoesNotRequireMX(t *testing.T) {
+	d := &domain.Domain{
+		SPFStatus:             "verified",
+		VerificationStatus:    "verified",
+		SESVerificationStatus: "verified",
+		DKIMStatus:            "verified",
+		MXStatus:              "failed",
+	}
+	if !outboundDomainVerified(d) {
+		t.Fatal("outbound domain verification must not require SES inbound MX")
+	}
+}
+
+func TestSPFAndDMARCParsingRejectAmbiguousOrIncompleteRecords(t *testing.T) {
+	if !containsSPF("v=spf1 include:amazonses.com ~all") {
+		t.Fatal("expected SES SPF mechanism to be recognized")
+	}
+	if containsSPF("v=spf1 include:other.example ~all") {
+		t.Fatal("unexpected SPF verification without SES include")
+	}
+	if isSPFRecord("v=spf2 include:amazonses.com") {
+		t.Fatal("unexpected non-SPF1 record")
+	}
+	if !containsDMARC("v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com") {
+		t.Fatal("expected DMARC policy to be recognized")
+	}
+	if containsDMARC("v=DMARC1; rua=mailto:dmarc@example.com") {
+		t.Fatal("expected DMARC without policy to fail")
+	}
+}

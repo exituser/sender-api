@@ -35,7 +35,7 @@ export default function InboundPage() {
       setEmails(data.data || []);
       setTotal(data.total || 0);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load inbound emails");
+      setError(err instanceof Error ? err.message : "We couldn’t load received messages. Try again.");
     } finally {
       setLoading(false);
     }
@@ -52,17 +52,21 @@ export default function InboundPage() {
       const detail = await api.inbound.get(id) as InboundEmail;
       setDetails((current) => ({ ...current, [id]: detail }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load inbound email");
+      setError(err instanceof Error ? err.message : "We couldn’t open this message. Try again.");
     } finally {
       setDetailLoading(null);
     }
   };
 
-  if (loading) return <div className="text-center py-8">Loading...</div>;
+  if (loading) return <div className="py-8 text-center text-sm text-gray-600" aria-busy="true">Loading received messages…</div>;
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Inbound Emails</h1>
+      <div>
+        <p className="dashboard-eyebrow">Messages sent to you</p>
+        <h1 className="mt-1 text-3xl font-semibold tracking-tight text-gray-950">Received messages</h1>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-600">See messages that arrived at your connected addresses.</p>
+      </div>
 
       {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
 
@@ -70,11 +74,11 @@ export default function InboundPage() {
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">From</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">To</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Sender</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Recipient</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Subject</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Details</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Received</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Message</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
@@ -83,14 +87,14 @@ export default function InboundPage() {
                 <td className="px-6 py-4 text-sm text-gray-900">{email.from}</td>
                 <td className="px-6 py-4 text-sm text-gray-900">{email.to?.join(", ")}</td>
                 <td className="px-6 py-4 text-sm text-gray-900">{email.subject}</td>
-                <td className="px-6 py-4 text-sm text-gray-500">{new Date(email.created_at).toLocaleDateString()}</td>
-                <td className="px-6 py-4 text-sm"><details aria-label={`Details for inbound email ${email.id}`} onToggle={(event) => { if (event.currentTarget.open) void loadDetail(email.id); }}><summary className="cursor-pointer text-blue-600">{detailLoading === email.id ? "Loading..." : "View"}</summary>{(() => { const detail = details[email.id] || email; return <div className="mt-2 max-w-xl space-y-3"><div><span className="font-medium">Message ID:</span> {detail.message_id || "—"}</div><div><span className="font-medium">Raw object:</span> {detail.raw_s3_key || "Unavailable"}</div><div><span className="font-medium">Attachments:</span> {detail.attachments?.length ?? 0}</div>{detail.text && <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-2">{detail.text}</pre>}{detail.html && <iframe aria-label={`HTML email ${email.id}`} title={`HTML email ${email.id}`} sandbox="" srcDoc={detail.html} className="h-48 w-full rounded border" />}{detail.headers && <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-2 text-xs">{JSON.stringify(detail.headers, null, 2)}</pre>}</div>; })()}</details></td>
+                <td className="px-6 py-4 text-sm text-gray-500">{new Date(email.created_at).toLocaleString()}</td>
+                <td className="px-6 py-4 text-sm"><details aria-label={`Open message from ${email.from}`} onToggle={(event) => { if (event.currentTarget.open) void loadDetail(email.id); }}><summary className="cursor-pointer text-blue-600">{detailLoading === email.id ? "Loading…" : "Open message"}</summary>{(() => { const detail = details[email.id] || email; return <div className="mt-3 max-w-xl space-y-3"><p className="text-sm text-gray-600">Attachments: {detail.attachments?.length ?? 0}</p>{detail.text && <div className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-gray-50 p-3 text-sm text-gray-800">{detail.text}</div>}{detail.html && <iframe aria-label={`Message from ${email.from}`} title={`Message from ${email.from}`} sandbox="" srcDoc={detail.html} className="h-64 w-full rounded border" />}</div>; })()}</details></td>
               </tr>
             ))}
           </tbody>
         </table>
         {emails.length === 0 && (
-          <div className="text-center py-8 text-gray-500">No inbound emails</div>
+          <div className="px-6 py-8 text-center text-gray-500">No received messages yet.</div>
         )}
         <Pagination page={page} pageSize={50} total={total} onPageChange={setPage} disabled={loading} />
       </div>

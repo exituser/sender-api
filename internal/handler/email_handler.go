@@ -24,11 +24,55 @@ func (h *EmailHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.Send)
 	r.Post("/batch", h.BatchSend)
+	r.Get("/dead-letters", h.ListDeadLetters)
+	r.Post("/dead-letters/{id}/replay", h.ReplayDeadLetter)
 	r.Get("/", h.List)
 	r.Get("/{id}", h.GetByID)
 	r.Get("/{id}/events", h.GetEvents)
 	r.Delete("/{id}", h.Cancel)
 	return r
+}
+
+func (h *EmailHandler) ListDeadLetters(w http.ResponseWriter, r *http.Request) {
+	if !requireRoles(w, r, "owner", "admin") {
+		return
+	}
+	_, teamID, ok := getTeamID(w, r)
+	if !ok {
+		return
+	}
+	limit := 50
+	if value := r.URL.Query().Get("limit"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			limit = parsed
+		}
+	}
+	deadLetters, err := h.emailService.ListDeadLetters(r.Context(), teamID, limit)
+	if err != nil {
+		writeError(w, "failed to list dead letters", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, map[string]any{"data": deadLetters}, http.StatusOK)
+}
+
+func (h *EmailHandler) ReplayDeadLetter(w http.ResponseWriter, r *http.Request) {
+	if !requireRoles(w, r, "owner", "admin") {
+		return
+	}
+	_, teamID, ok := getTeamID(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if err := h.emailService.ReplayDeadLetter(r.Context(), teamID, id); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "requeued", "id": id.String()}, http.StatusAccepted)
 }
 
 func (h *EmailHandler) Send(w http.ResponseWriter, r *http.Request) {

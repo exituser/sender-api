@@ -26,11 +26,14 @@ type Config struct {
 	WorkerPollInterval              time.Duration
 	InboundVisibilityTimeoutSeconds int
 
-	AWSRegion           string
-	AWSAccessKeyID      string
-	AWSSecretAccessKey  string
-	AWSESConfigSet      string
-	OutboundSESTopicArn string
+	AWSRegion                string
+	AWSAccessKeyID           string
+	AWSSecretAccessKey       string
+	AWSESConfigSet           string
+	OutboundSESTopicArn      string
+	RequireOutboundSESEvents bool
+	PublicAPIURL             string
+	UnsubscribeSigningSecret string
 
 	StripeSecretKey     string
 	StripeWebhookSecret string
@@ -75,11 +78,14 @@ func Load() *Config {
 		WorkerPollInterval:              getDurationEnv("WORKER_POLL_INTERVAL", 5*time.Second),
 		InboundVisibilityTimeoutSeconds: getPositiveIntEnv("INBOUND_SQS_VISIBILITY_TIMEOUT_SECONDS", 120),
 
-		AWSRegion:           getEnv("AWS_REGION", "eu-west-1"),
-		AWSAccessKeyID:      os.Getenv("AWS_ACCESS_KEY_ID"),
-		AWSSecretAccessKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
-		AWSESConfigSet:      os.Getenv("AWS_SES_CONFIGSET"),
-		OutboundSESTopicArn: os.Getenv("OUTBOUND_SES_TOPIC_ARN"),
+		AWSRegion:                getEnv("AWS_REGION", "eu-west-1"),
+		AWSAccessKeyID:           os.Getenv("AWS_ACCESS_KEY_ID"),
+		AWSSecretAccessKey:       os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		AWSESConfigSet:           os.Getenv("AWS_SES_CONFIGSET"),
+		OutboundSESTopicArn:      os.Getenv("OUTBOUND_SES_TOPIC_ARN"),
+		RequireOutboundSESEvents: getBoolEnv("REQUIRE_OUTBOUND_SES_EVENTS", false),
+		PublicAPIURL:             strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_API_URL")), "/"),
+		UnsubscribeSigningSecret: os.Getenv("UNSUBSCRIBE_SIGNING_SECRET"),
 
 		StripeSecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
 		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
@@ -173,6 +179,24 @@ func (c *Config) Validate() error {
 	}
 	if c.OutboundSESTopicArn != "" && strings.TrimSpace(c.AWSESConfigSet) == "" {
 		return fmt.Errorf("AWS_SES_CONFIGSET is required when OUTBOUND_SES_TOPIC_ARN is configured")
+	}
+	if c.RequireOutboundSESEvents && strings.TrimSpace(c.OutboundSESTopicArn) == "" {
+		return fmt.Errorf("OUTBOUND_SES_TOPIC_ARN is required when REQUIRE_OUTBOUND_SES_EVENTS is enabled")
+	}
+	if (strings.TrimSpace(c.PublicAPIURL) == "") != (strings.TrimSpace(c.UnsubscribeSigningSecret) == "") {
+		return fmt.Errorf("PUBLIC_API_URL and UNSUBSCRIBE_SIGNING_SECRET must be configured together")
+	}
+	if strings.TrimSpace(c.UnsubscribeSigningSecret) != "" {
+		if len(strings.TrimSpace(c.UnsubscribeSigningSecret)) < 32 {
+			return fmt.Errorf("UNSUBSCRIBE_SIGNING_SECRET must be at least 32 characters")
+		}
+		parsed, err := url.Parse(c.PublicAPIURL)
+		if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" || parsed.RawQuery != "" || (parsed.Path != "" && parsed.Path != "/") || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return fmt.Errorf("PUBLIC_API_URL must be an absolute http(s) URL")
+		}
+		if c.IsProduction() && parsed.Scheme != "https" {
+			return fmt.Errorf("PUBLIC_API_URL must use HTTPS in production")
+		}
 	}
 	if strings.TrimSpace(c.StripeSecretKey) != "" {
 		for key, value := range map[string]string{

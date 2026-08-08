@@ -45,11 +45,12 @@ type Domain struct {
 }
 
 type DNSRecord struct {
-	Type   DNSRecordType `json:"type"`
-	Host   string        `json:"host"`
-	Value  string        `json:"value"`
-	TTL    int           `json:"ttl"`
-	Status string        `json:"status"`
+	Type     DNSRecordType `json:"type"`
+	Host     string        `json:"host"`
+	Value    string        `json:"value"`
+	TTL      int           `json:"ttl"`
+	Status   string        `json:"status"`
+	Optional bool          `json:"optional,omitempty"`
 }
 
 type CreateDomainRequest struct {

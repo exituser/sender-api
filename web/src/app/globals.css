@@ -1194,3 +1194,262 @@ body {
 .skip-link:focus-visible {
   left: 1rem;
 }
+
+.dashboard-page {
+  color: #172027;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-eyebrow {
+  color: #6b7280;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.dashboard-button {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.7rem;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 150ms;
+}
+
+.dashboard-button:active {
+  transform: scale(0.96);
+}
+
+.dashboard-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.dashboard-button-primary {
+  background: #172027;
+  color: white;
+}
+
+.dashboard-button-primary:hover { background: #2c3940; }
+
+.dashboard-button-secondary {
+  border: 1px solid #d1d5db;
+  background: white;
+  color: #374151;
+  box-shadow: 0 1px 2px rgb(23 32 39 / 5%);
+}
+
+.dashboard-button-secondary:hover { border-color: #9ca3af; background: #f9fafb; }
+
+.dashboard-refresh-icon {
+  display: inline-block;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.dashboard-refresh-icon-spinning { animation: dashboard-spin 800ms linear infinite; }
+
+.dashboard-health {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  border: 1px solid;
+  border-radius: 1rem;
+  padding: 1.25rem 1.5rem;
+}
+
+.dashboard-health-ready { border-color: #bbf7d0; background: #f0fdf4; }
+.dashboard-health-attention { border-color: #fde68a; background: #fffbeb; }
+.dashboard-health-action_needed { border-color: #fecaca; background: #fef2f2; }
+
+.dashboard-status-icon,
+.dashboard-alert-icon,
+.dashboard-clear-icon,
+.dashboard-domain-icon,
+.dashboard-card-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+}
+
+.dashboard-status-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 999px;
+  font-size: 1.25rem;
+}
+
+.dashboard-status-icon-ready { background: #dcfce7; color: #15803d; }
+.dashboard-status-icon-attention { background: #fef3c7; color: #a16207; }
+
+.dashboard-health-count {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  color: #6b7280;
+  font-size: 0.75rem;
+  text-align: right;
+}
+
+.dashboard-health-count strong { color: #172027; font-size: 1.8rem; line-height: 1; }
+
+.dashboard-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  border: 1px solid;
+  border-radius: 0.9rem;
+  padding: 1rem 1.1rem;
+}
+
+.dashboard-alert-icon {
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+
+.dashboard-action-link,
+.dashboard-card-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-decoration: none;
+  transition-property: color;
+  transition-duration: 150ms;
+}
+
+.dashboard-action-link { flex: 0 0 auto; margin-top: 0.1rem; }
+
+.dashboard-clear-state {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  border: 1px solid #bbf7d0;
+  border-radius: 0.9rem;
+  background: #f0fdf4;
+  padding: 1rem 1.1rem;
+}
+
+.dashboard-clear-icon {
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.dashboard-stat-card,
+.dashboard-panel {
+  border: 1px solid #e5e7eb;
+  border-radius: 1rem;
+  background: white;
+  box-shadow: 0 1px 2px rgb(23 32 39 / 4%);
+}
+
+.dashboard-stat-card { min-height: 15rem; padding: 1.25rem; }
+.dashboard-panel { padding: 1.25rem 1.35rem; }
+
+.dashboard-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: #374151;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.dashboard-card-icon { width: 2rem; height: 2rem; border-radius: 0.65rem; font-size: 1.05rem; }
+.dashboard-card-icon-blue { background: #dbeafe; color: #1d4ed8; }
+.dashboard-card-icon-green { background: #dcfce7; color: #15803d; }
+.dashboard-card-icon-purple { background: #ede9fe; color: #6d28d9; }
+
+.dashboard-stat-number {
+  margin-top: 1.25rem;
+  color: #172027;
+  font-size: 2.35rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.dashboard-card-link { margin-top: 1.1rem; color: #1d4ed8; }
+.dashboard-card-link:hover { color: #1e3a8a; }
+.dashboard-card-link-compact { margin-top: 0; font-size: 0.8rem; }
+
+.dashboard-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dashboard-panel-empty { padding: 2.25rem 0 1rem; }
+
+.dashboard-domain-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  border-radius: 0.75rem;
+  background: #f9fafb;
+  padding: 0.85rem;
+}
+
+.dashboard-domain-icon { width: 1.8rem; height: 1.8rem; border-radius: 999px; font-size: 0.8rem; }
+.dashboard-domain-icon-ready { background: #dcfce7; color: #15803d; }
+.dashboard-domain-icon-warning { background: #fef3c7; color: #a16207; }
+
+.dashboard-dot { width: 0.6rem; height: 0.6rem; margin-top: 0.35rem; border-radius: 999px; }
+.dashboard-dot-success { background: #22c55e; }
+.dashboard-dot-alert { background: #ef4444; }
+.dashboard-dot-neutral { background: #94a3b8; }
+
+.dashboard-error-card {
+  border: 1px solid #fecaca;
+  border-radius: 0.9rem;
+  background: #fef2f2;
+  padding: 1rem 1.1rem;
+  color: #991b1b;
+  font-size: 0.875rem;
+}
+
+.dashboard-skeleton {
+  border-radius: 1rem;
+  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  animation: dashboard-shimmer 1.4s ease-in-out infinite;
+}
+
+.dashboard-skeleton-heading { width: min(28rem, 70%); height: 5rem; }
+
+@keyframes dashboard-spin { to { transform: rotate(360deg); } }
+@keyframes dashboard-shimmer { to { background-position: -200% 0; } }
+
+@media (max-width: 700px) {
+  .dashboard-health { align-items: flex-start; padding: 1rem; }
+  .dashboard-health-count { display: none; }
+  .dashboard-alert { flex-wrap: wrap; }
+  .dashboard-alert .dashboard-action-link { margin-left: 2.7rem; }
+  .dashboard-stat-card { min-height: auto; }
+  .dashboard-panel-heading { flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-refresh-icon-spinning,
+  .dashboard-skeleton { animation: none; }
+  .dashboard-button,
+  .dashboard-action-link,
+  .dashboard-card-link { transition: none; }
+}

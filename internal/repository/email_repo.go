@@ -27,14 +27,18 @@ func (r *EmailRepo) Create(ctx context.Context, email *domain.Email) error {
 	tagsJSON, _ := json.Marshal(email.Tags)
 	metadataJSON, _ := json.Marshal(email.Metadata)
 	headersJSON, _ := json.Marshal(email.Headers)
+	category := email.Category
+	if category == "" {
+		category = domain.EmailCategoryTransactional
+	}
 
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO emails (id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, html, text, reply_to, attachments, status, tags, metadata, headers, idempotency_key, idempotency_hash, scheduled_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		INSERT INTO emails (id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, category, html, text, reply_to, attachments, status, tags, metadata, headers, idempotency_key, idempotency_hash, scheduled_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 	`,
 		email.ID, email.TeamID, email.APIKeyID, email.From,
 		toJSON, ccJSON, bccJSON,
-		email.Subject, email.HTML, email.Text, replyToJSON, attachmentsJSON, email.Status,
+		email.Subject, category, email.HTML, email.Text, replyToJSON, attachmentsJSON, email.Status,
 		tagsJSON, metadataJSON, headersJSON, email.IdempotencyKey, email.IdempotencyHash, email.ScheduledAt,
 	)
 	return err
@@ -45,12 +49,12 @@ func (r *EmailRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Email, e
 	var toJSON, ccJSON, bccJSON, replyToJSON, attachmentsJSON, tagsJSON, metadataJSON, headersJSON []byte
 
 	err := r.db.QueryRow(ctx, `
-		SELECT id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, html, text, reply_to, attachments, status, tags, metadata, headers, idempotency_key, idempotency_hash, provider_message_id, sending_at, scheduled_at, sent_at, created_at
+		SELECT id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, category, html, text, reply_to, attachments, status, tags, metadata, headers, idempotency_key, idempotency_hash, provider_message_id, sending_at, scheduled_at, sent_at, created_at
 		FROM emails WHERE id = $1
 	`, id).Scan(
 		&email.ID, &email.TeamID, &email.APIKeyID, &email.From,
 		&toJSON, &ccJSON, &bccJSON,
-		&email.Subject, &email.HTML, &email.Text, &replyToJSON, &attachmentsJSON, &email.Status,
+		&email.Subject, &email.Category, &email.HTML, &email.Text, &replyToJSON, &attachmentsJSON, &email.Status,
 		&tagsJSON, &metadataJSON, &headersJSON, &email.IdempotencyKey, &email.IdempotencyHash, &email.ProviderMessageID, &email.SendingAt,
 		&email.ScheduledAt, &email.SentAt, &email.CreatedAt,
 	)
@@ -71,11 +75,30 @@ func (r *EmailRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Email, e
 }
 
 func (r *EmailRepo) GetByIDForTeam(ctx context.Context, teamID, id uuid.UUID) (*domain.Email, error) {
-	email, err := r.GetByID(ctx, id)
-	if err != nil || email.TeamID != teamID {
+	var email domain.Email
+	var toJSON, ccJSON, bccJSON, replyToJSON, attachmentsJSON, tagsJSON, metadataJSON, headersJSON []byte
+	err := r.db.QueryRow(ctx, `
+		SELECT id, team_id, api_key_id, from_addr, to_addr, cc, bcc, subject, category, html, text, reply_to, attachments, status, tags, metadata, headers, idempotency_key, idempotency_hash, provider_message_id, sending_at, scheduled_at, sent_at, created_at
+		FROM emails WHERE id = $1 AND team_id = $2
+	`, id, teamID).Scan(
+		&email.ID, &email.TeamID, &email.APIKeyID, &email.From,
+		&toJSON, &ccJSON, &bccJSON,
+		&email.Subject, &email.Category, &email.HTML, &email.Text, &replyToJSON, &attachmentsJSON, &email.Status,
+		&tagsJSON, &metadataJSON, &headersJSON, &email.IdempotencyKey, &email.IdempotencyHash, &email.ProviderMessageID, &email.SendingAt,
+		&email.ScheduledAt, &email.SentAt, &email.CreatedAt,
+	)
+	if err != nil {
 		return nil, fmt.Errorf("email not found")
 	}
-	return email, nil
+	_ = json.Unmarshal(toJSON, &email.To)
+	_ = json.Unmarshal(ccJSON, &email.CC)
+	_ = json.Unmarshal(bccJSON, &email.BCC)
+	_ = json.Unmarshal(replyToJSON, &email.ReplyTo)
+	_ = json.Unmarshal(attachmentsJSON, &email.Attachments)
+	_ = json.Unmarshal(tagsJSON, &email.Tags)
+	_ = json.Unmarshal(metadataJSON, &email.Metadata)
+	_ = json.Unmarshal(headersJSON, &email.Headers)
+	return &email, nil
 }
 
 func (r *EmailRepo) GetByIdempotencyKey(ctx context.Context, teamID uuid.UUID, key string) (*domain.Email, error) {
@@ -147,7 +170,7 @@ func (r *EmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset in
 	}
 
 	rows, err := r.db.Query(ctx, `
-		SELECT id, team_id, api_key_id, from_addr, to_addr, subject, status, created_at
+		SELECT id, team_id, api_key_id, from_addr, to_addr, subject, category, status, created_at
 		FROM emails WHERE team_id = $1
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
@@ -161,7 +184,7 @@ func (r *EmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset in
 	for rows.Next() {
 		var email domain.Email
 		var toJSON []byte
-		err := rows.Scan(&email.ID, &email.TeamID, &email.APIKeyID, &email.From, &toJSON, &email.Subject, &email.Status, &email.CreatedAt)
+		err := rows.Scan(&email.ID, &email.TeamID, &email.APIKeyID, &email.From, &toJSON, &email.Subject, &email.Category, &email.Status, &email.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -225,6 +248,32 @@ func (r *EmailRepo) AddEvent(ctx context.Context, event *domain.EmailEvent) erro
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, event.ID, event.EmailID, event.Event, dataJSON, event.IPAddress, event.UserAgent)
 	return err
+}
+
+func (r *EmailRepo) AddEventWithDeliveries(ctx context.Context, event *domain.EmailEvent, deliveries []*domain.WebhookDelivery) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	dataJSON, _ := json.Marshal(event.Data)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO email_events (id, email_id, event, data, ip_address, user_agent)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, event.ID, event.EmailID, event.Event, dataJSON, event.IPAddress, event.UserAgent); err != nil {
+		return err
+	}
+	for _, delivery := range deliveries {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO webhook_deliveries (id, webhook_id, event_id, event, payload, status, attempts, next_attempt_at)
+			VALUES ($1, $2, $3, $4, $5, 'pending', 0, NOW())
+			ON CONFLICT (webhook_id, event_id) DO NOTHING
+		`, delivery.ID, delivery.WebhookID, delivery.EventID, delivery.Event, delivery.Payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *EmailRepo) GetEvents(ctx context.Context, emailID uuid.UUID) ([]domain.EmailEvent, error) {

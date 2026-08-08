@@ -7,11 +7,12 @@ import { createClient } from "@/lib/supabase/client";
 import { BrandMark } from "@/components/brand-mark";
 
 const navigation = [
+  { name: "Overview", href: "/dashboard" },
   { name: "Emails", href: "/emails" },
   { name: "Contacts", href: "/contacts" },
   { name: "Domains", href: "/domains" },
   { name: "API Keys", href: "/api-keys" },
-  { name: "Webhooks", href: "/webhooks" },
+  { name: "Connections", href: "/webhooks" },
   { name: "Inbound", href: "/inbound" },
   { name: "Settings", href: "/settings/team" },
   { name: "Billing", href: "/settings/billing" },
@@ -32,7 +33,7 @@ export function DashboardNav() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-16">
           <div className="flex">
-            <Link href="/emails" className="dashboard-brand flex items-center gap-2 px-4 text-xl font-bold">
+            <Link href="/dashboard" className="dashboard-brand flex items-center gap-2 px-4 text-xl font-bold">
               <BrandMark size={30} />
               <span>Sender API</span>
             </Link>

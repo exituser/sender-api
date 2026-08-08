@@ -83,6 +83,7 @@ func (q *RedisQueue) Requeue(ctx context.Context, emailID string, countAttempt b
 			redis.call('EXPIRE', KEYS[3], 86400)
 			if attempts >= tonumber(ARGV[4]) then
 				redis.call('LPUSH', KEYS[2], ARGV[1])
+				redis.call('LTRIM', KEYS[2], 0, 9999)
 				return 1
 			end
 		end
@@ -102,6 +103,35 @@ func (q *RedisQueue) Requeue(ctx context.Context, emailID string, countAttempt b
 	}
 	if result == 1 {
 		return ErrDeadLettered
+	}
+	return nil
+}
+
+func (q *RedisQueue) ListDead(ctx context.Context, limit int) ([]string, error) {
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	return q.client.LRange(ctx, emailDeadKey, 0, int64(limit-1)).Result()
+}
+
+func (q *RedisQueue) ReplayDead(ctx context.Context, emailID string) error {
+	const script = `
+		local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
+		if removed == 0 then return 0 end
+		redis.call('DEL', KEYS[2])
+		redis.call('LPUSH', KEYS[3], ARGV[1])
+		return 1
+	`
+	attemptKey := "emails:attempts:" + emailID
+	result, err := q.client.Eval(ctx, script, []string{emailDeadKey, attemptKey, emailPendingKey}, emailID).Int()
+	if err != nil {
+		return fmt.Errorf("replay dead letter: %w", err)
+	}
+	if result == 0 {
+		return fmt.Errorf("email %s is not in the dead letter queue", emailID)
 	}
 	return nil
 }

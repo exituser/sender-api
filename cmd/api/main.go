@@ -132,6 +132,8 @@ func main() {
 	webhookRepo := repository.NewWebhookRepo(dbPool)
 	webhookDeliveryRepo := repository.NewWebhookDeliveryRepo(dbPool)
 	suppressionRepo := repository.NewSuppressionRepo(dbPool)
+	batchRepo := repository.NewBatchRepo(dbPool)
+	dashboardRepo := repository.NewDashboardRepo(dbPool)
 
 	auth.SetVerifyAPIKeyContextFunc(func(ctx context.Context, rawKey string) (*auth.APIKeyContext, error) {
 		verification, err := apiKeyRepo.VerifyAPIKey(ctx, rawKey)
@@ -180,6 +182,20 @@ func main() {
 	sesMailer := mailer.NewSESMailer(sesClient, cfg.AWSESConfigSet, logger)
 
 	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger, suppressionRepo)
+	emailService.SetContactRepository(contactRepo)
+	emailService.SetBatchRepository(batchRepo)
+	var unsubscribeService *service.UnsubscribeService
+	if cfg.PublicAPIURL != "" && cfg.UnsubscribeSigningSecret != "" {
+		signer, signerErr := service.NewUnsubscribeSigner(cfg.UnsubscribeSigningSecret, cfg.PublicAPIURL)
+		if signerErr != nil {
+			logger.Error("failed to initialize unsubscribe links", "error", signerErr)
+			os.Exit(1)
+		}
+		unsubscribeService = service.NewUnsubscribeService(signer, contactRepo, suppressionRepo)
+		emailService.SetUnsubscribeService(unsubscribeService)
+	} else {
+		unsubscribeService = service.NewUnsubscribeService(nil, contactRepo, suppressionRepo)
+	}
 	emailService.SetUsageLimiter(queue.NewRedisUsageLimiter(redisClient), cfg.DailyRecipientLimit)
 	emailService.SetPlanResolver(teamRepo, cfg.PlanFreeDailyLimit, cfg.PlanProDailyLimit, cfg.PlanScaleDailyLimit)
 	teamService := service.NewTeamService(teamRepo, logger)
@@ -189,6 +205,7 @@ func main() {
 	stripeClient := billing.NewStripeClient(cfg.StripeSecretKey, cfg.StripeWebhookSecret, cfg.StripePricePro, cfg.StripePriceScale, cfg.StripeSuccessURL, cfg.StripeCancelURL, cfg.StripeReturnURL)
 	billingService := service.NewBillingService(teamRepo, teamRepo, stripeClient, logger)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
+	dashboardService := service.NewDashboardService(dashboardRepo)
 
 	emailHandler := handler.NewEmailHandler(emailService)
 	teamHandler := handler.NewTeamHandler(teamService)
@@ -200,6 +217,8 @@ func main() {
 	inboundHandler := handler.NewInboundHandler(inboundService, cfg.InboundWebhookToken, cfg.AWSRegion, cfg.InboundSNSTopicArn)
 	sesEventHandler := handler.NewSESEventHandler(emailService, cfg.AWSRegion, cfg.OutboundSESTopicArn)
 	billingHandler := handler.NewBillingHandler(billingService)
+	dashboardHandler := handler.NewDashboardHandler(dashboardService)
+	unsubscribeHandler := handler.NewUnsubscribeHandler(unsubscribeService)
 
 	r := chi.NewRouter()
 
@@ -219,7 +238,8 @@ func main() {
 	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		readyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		ready := redisReady && (jwtReady || !cfg.IsProduction()) && awsReady
+		outboundEventsReady := cfg.OutboundSESTopicArn != ""
+		ready := redisReady && (jwtReady || !cfg.IsProduction()) && awsReady && (!cfg.RequireOutboundSESEvents || outboundEventsReady)
 		if ready && dbPool.Ping(readyCtx) != nil {
 			ready = false
 		}
@@ -229,11 +249,11 @@ func main() {
 		if !ready {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"not_ready"}`))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"not_ready","checks":{"outbound_ses_events":%t}}`, outboundEventsReady)))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ready"}`))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"ready","checks":{"outbound_ses_events":%t}}`, outboundEventsReady)))
 	})
 	metricsHandler := http.Handler(http.HandlerFunc(metrics.Handler))
 	if cfg.MetricsToken != "" {
@@ -265,12 +285,15 @@ func main() {
 			billingHandler.HandleWebhook,
 		)
 	}
+	r.With(pkgmiddleware.RateLimit(redisClient, "unsubscribe")).Get("/api/v1/unsubscribe/{token}", unsubscribeHandler.Get)
+	r.With(pkgmiddleware.RateLimit(redisClient, "unsubscribe")).Post("/api/v1/unsubscribe/{token}", unsubscribeHandler.Post)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(auth.AuthMiddleware)
 		r.Use(pkgmiddleware.RateLimit(redisClient, "api"))
 
 		r.Mount("/emails", emailHandler.Routes())
+		r.Get("/dashboard/summary", dashboardHandler.Summary)
 		r.Mount("/teams", teamHandler.Routes())
 		r.Mount("/contacts", contactHandler.Routes())
 		r.Mount("/domains", domainHandler.Routes())

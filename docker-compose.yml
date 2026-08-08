@@ -20,6 +20,9 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SES_CONFIGSET: ${AWS_SES_CONFIGSET:-}
       OUTBOUND_SES_TOPIC_ARN: ${OUTBOUND_SES_TOPIC_ARN:-}
+      REQUIRE_OUTBOUND_SES_EVENTS: ${REQUIRE_OUTBOUND_SES_EVENTS:-false}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-}
+      UNSUBSCRIBE_SIGNING_SECRET: ${UNSUBSCRIBE_SIGNING_SECRET:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
@@ -82,6 +85,9 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SES_CONFIGSET: ${AWS_SES_CONFIGSET:-}
       OUTBOUND_SES_TOPIC_ARN: ${OUTBOUND_SES_TOPIC_ARN:-}
+      REQUIRE_OUTBOUND_SES_EVENTS: ${REQUIRE_OUTBOUND_SES_EVENTS:-false}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-}
+      UNSUBSCRIBE_SIGNING_SECRET: ${UNSUBSCRIBE_SIGNING_SECRET:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
@@ -176,7 +182,10 @@ services:
       - ./migrations/007_team_invitations.up.sql:/docker-entrypoint-initdb.d/07_team_invitations.sql
       - ./migrations/008_ses_domain_identity.up.sql:/docker-entrypoint-initdb.d/08_ses_domain_identity.sql
       - ./migrations/009_billing_state.up.sql:/docker-entrypoint-initdb.d/09_billing_state.sql
-      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/10_compose_version.sql
+      - ./migrations/010_billing_event_ordering.up.sql:/docker-entrypoint-initdb.d/10_billing_event_ordering.sql
+      - ./migrations/011_batch_manifest.up.sql:/docker-entrypoint-initdb.d/11_batch_manifest.sql
+      - ./migrations/012_marketing_unsubscribe.up.sql:/docker-entrypoint-initdb.d/12_marketing_unsubscribe.sql
+      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/13_compose_version.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-supabase_admin} -d $${POSTGRES_DB:-sender_api}"]
       interval: 5s

@@ -22,6 +22,13 @@ const (
 	EmailStatusCancelled  EmailStatus = "cancelled"
 )
 
+type EmailCategory string
+
+const (
+	EmailCategoryTransactional EmailCategory = "transactional"
+	EmailCategoryMarketing     EmailCategory = "marketing"
+)
+
 type Email struct {
 	ID                uuid.UUID         `json:"id" db:"id"`
 	TeamID            uuid.UUID         `json:"team_id" db:"team_id"`
@@ -31,6 +38,7 @@ type Email struct {
 	CC                []string          `json:"cc,omitempty" db:"cc"`
 	BCC               []string          `json:"bcc,omitempty" db:"bcc"`
 	Subject           string            `json:"subject" db:"subject"`
+	Category          EmailCategory     `json:"category" db:"category"`
 	HTML              string            `json:"html,omitempty" db:"html"`
 	Text              string            `json:"text,omitempty" db:"text"`
 	ReplyTo           []string          `json:"reply_to,omitempty" db:"reply_to"`
@@ -59,6 +67,7 @@ type SendEmailRequest struct {
 	CC          []string          `json:"cc,omitempty"`
 	BCC         []string          `json:"bcc,omitempty"`
 	Subject     string            `json:"subject"`
+	Category    EmailCategory     `json:"category,omitempty"`
 	HTML        string            `json:"html,omitempty"`
 	Text        string            `json:"text,omitempty"`
 	ReplyTo     []string          `json:"reply_to,omitempty"`
@@ -77,6 +86,11 @@ type Attachment struct {
 type EmailResponse struct {
 	ID         string `json:"id"`
 	Idempotent bool   `json:"idempotent,omitempty"`
+}
+
+type DeadLetter struct {
+	ID     string      `json:"id"`
+	Status EmailStatus `json:"status"`
 }
 
 type EmailListResponse struct {

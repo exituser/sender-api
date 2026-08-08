@@ -49,11 +49,21 @@ func (r *DomainRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Domain,
 }
 
 func (r *DomainRepo) GetByIDForTeam(ctx context.Context, teamID, id uuid.UUID) (*domain.Domain, error) {
-	d, err := r.GetByID(ctx, id)
-	if err != nil || d.TeamID != teamID {
+	var d domain.Domain
+	var dkimRecords []byte
+	err := r.db.QueryRow(ctx, `
+		SELECT id, team_id, name, status, verification_token, verification_status, ses_verification_status, spf_status, mx_status, dkim_status, dmarc_status, dkim_dns_record, dkim_dns_records, spf_dns_record, mx_dns_record, dmarc_dns_record, verification_dns_record, created_at
+		FROM domains WHERE id = $1 AND team_id = $2
+	`, id, teamID).Scan(
+		&d.ID, &d.TeamID, &d.Name, &d.Status, &d.VerificationToken, &d.VerificationStatus, &d.SESVerificationStatus,
+		&d.SPFStatus, &d.MXStatus, &d.DKIMStatus, &d.DMARCStatus,
+		&d.DKIMDNSRecord, &dkimRecords, &d.SPFDNSRecord, &d.MXDNSRecord, &d.DMARCDNSRecord, &d.VerificationDNSRecord, &d.CreatedAt,
+	)
+	if err != nil {
 		return nil, fmt.Errorf("domain not found")
 	}
-	return d, nil
+	_ = json.Unmarshal(dkimRecords, &d.DKIMDNSRecords)
+	return &d, nil
 }
 
 func (r *DomainRepo) GetByName(ctx context.Context, teamID uuid.UUID, name string) (*domain.Domain, error) {

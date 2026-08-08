@@ -112,6 +112,15 @@ type suppressionRepoStub struct {
 	upserts      []domain.Suppression
 }
 
+type contactSubscriptionRepoStub struct {
+	domain.ContactRepository
+	unsubscribed []string
+}
+
+func (s *contactSubscriptionRepoStub) GetUnsubscribedByEmails(context.Context, uuid.UUID, []string) ([]string, error) {
+	return s.unsubscribed, nil
+}
+
 func (s *suppressionRepoStub) GetByEmails(_ context.Context, teamID uuid.UUID, emails []string) ([]domain.Suppression, error) {
 	s.lookupTeam = teamID
 	s.lookupEmails = append([]string(nil), emails...)
@@ -275,5 +284,22 @@ func TestEmailServiceBlocksSuppressedRecipientBeforePersisting(t *testing.T) {
 	}
 	if suppressions.lookupTeam != teamID || len(suppressions.lookupEmails) != 1 || suppressions.lookupEmails[0] != "blocked@example.net" {
 		t.Fatalf("expected normalized team-scoped lookup, got team=%s emails=%v", suppressions.lookupTeam, suppressions.lookupEmails)
+	}
+}
+
+func TestEmailServiceBlocksUnsubscribedRecipientBeforePersisting(t *testing.T) {
+	teamID := uuid.New()
+	repo := &quotaEmailRepoStub{}
+	queue := &quotaQueueStub{}
+	contacts := &contactSubscriptionRepoStub{unsubscribed: []string{"one@example.net"}}
+	service := newQuotaEmailService(repo, queue)
+	service.SetContactRepository(contacts)
+
+	_, err := service.Send(context.Background(), teamID, quotaRequest())
+	if !errors.Is(err, ErrRecipientUnsubscribed) {
+		t.Fatalf("expected unsubscribed recipient error, got %v", err)
+	}
+	if repo.createCalls != 0 || queue.enqueueCalls != 0 {
+		t.Fatalf("unsubscribed request must not persist or enqueue: creates=%d enqueues=%d", repo.createCalls, queue.enqueueCalls)
 	}
 }

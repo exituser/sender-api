@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/client";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 const ACTIVE_TEAM_KEY = "sender-api.active-team";
+const REQUEST_TIMEOUT_MS = 15_000;
 
 let activeTeamCache: { sessionKey: string; teamId: string } | undefined;
 let activeTeamRequest: { sessionKey: string; promise: Promise<string> } | undefined;
@@ -11,6 +12,19 @@ interface RequestOptions {
   method?: string;
   body?: unknown;
   headers?: Record<string, string>;
+}
+
+function friendlyError(status: number, message: string): string {
+  const normalized = message.toLowerCase();
+  if (status === 401) return "Your session has expired. Sign in again to continue.";
+  if (status === 403) return "You don’t have permission to do that.";
+  if (status === 404) return "We couldn’t find what you were looking for.";
+  if (status >= 500) return "Something went wrong on our side. Try again in a moment.";
+  if (normalized.includes("invalid domain")) return "Enter a valid domain name, such as example.com.";
+  if (normalized.includes("already exists")) return "This is already connected to your workspace.";
+  if (normalized.includes("at least one event")) return "Choose at least one update to send.";
+  if (normalized.includes("failed to fetch") || normalized.includes("networkerror")) return "We couldn’t reach the service. Check your connection and try again.";
+  return message;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -40,22 +54,37 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     requestHeaders["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(`${API_BASE_URL}/api/v1${path}`, {
-    method,
-    headers: requestHeaders,
-    body: body ? (isFormData ? body as FormData : JSON.stringify(body)) : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1${path}`, {
+      method,
+      headers: requestHeaders,
+      body: body ? (isFormData ? body as FormData : JSON.stringify(body)) : undefined,
+      signal: controller.signal,
+    });
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: "Unknown error" }));
-    throw new Error(error.error || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: "Unknown error" }));
+      throw new Error(friendlyError(res.status, error.error || "Something went wrong. Try again."));
+    }
+
+    if (res.status === 204) {
+      return {} as T;
+    }
+
+    return await res.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+    if (error instanceof TypeError) {
+      throw new Error("We couldn’t reach the service. Check your connection and try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  if (res.status === 204) {
-    return {} as T;
-  }
-
-  return res.json();
 }
 
 async function getActiveTeamId(
@@ -93,25 +122,35 @@ async function fetchActiveTeamId(
   generation: number
 ): Promise<string> {
   const stored = window.localStorage.getItem(ACTIVE_TEAM_KEY);
-  const response = await fetch(`${API_BASE_URL}/api/v1/teams`, {
-    headers: authHeaders,
-  });
-  if (!response.ok) {
-    invalidateActiveTeamCache();
-    return "";
-  }
-  const teams = (await response.json()) as { id: string }[];
-  const activeTeam = teams.find((team) => team.id === stored) ?? teams[0];
-  if (activeTeam?.id) {
-    if (generation !== activeTeamGeneration) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/v1/teams`, {
+      headers: authHeaders,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      invalidateActiveTeamCache();
       return "";
     }
-    window.localStorage.setItem(ACTIVE_TEAM_KEY, activeTeam.id);
-    activeTeamCache = { sessionKey, teamId: activeTeam.id };
-    return activeTeam.id;
+    const teams = (await response.json()) as { id: string }[];
+    const activeTeam = teams.find((team) => team.id === stored) ?? teams[0];
+    if (activeTeam?.id) {
+      if (generation !== activeTeamGeneration) {
+        return "";
+      }
+      window.localStorage.setItem(ACTIVE_TEAM_KEY, activeTeam.id);
+      activeTeamCache = { sessionKey, teamId: activeTeam.id };
+      return activeTeam.id;
+    }
+    invalidateActiveTeamCache();
+    return "";
+  } catch {
+    invalidateActiveTeamCache();
+    return "";
+  } finally {
+    clearTimeout(timeout);
   }
-  invalidateActiveTeamCache();
-  return "";
 }
 
 export function setActiveTeamId(teamId: string) {
@@ -142,6 +181,9 @@ function createIdempotencyKey(): string {
 }
 
 export const api = {
+  dashboard: {
+    summary: () => request("/dashboard/summary"),
+  },
   emails: {
     list: (limit = 50, offset = 0) =>
       request(`/emails?limit=${limit}&offset=${offset}`),

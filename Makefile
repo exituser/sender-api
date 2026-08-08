@@ -24,7 +24,7 @@ clean:
 	rm -rf tmp/
 
 migrate-up:
-	migrate -path migrations -database "$(DATABASE_URL)" up
+	./scripts/migrate.sh
 
 migrate-down:
 	migrate -path migrations -database "$(DATABASE_URL)" down
