@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 const providers = [
   { name: "OVHcloud", role: "Hosting", details: "Hosts the application services and operational infrastructure used to run Sender API." },
   { name: "Amazon SES", role: "Email delivery", details: "Transmits requested email and returns delivery, bounce, complaint, and other provider events." },
-  { name: "Supabase", role: "Database and authentication", details: "Provides managed PostgreSQL storage and authentication services for account, workspace, and application data." },
+  { name: "Supabase", role: "Authentication and managed database (when enabled)", details: "Provides authentication for user accounts. Managed PostgreSQL storage is used only when the deployment is configured to use Supabase Database; the current Compose profile keeps PostgreSQL on the application host." },
   { name: "Stripe", role: "Billing", details: "Processes subscriptions, checkout, customer portal, and payment status when paid plans are enabled." },
 ];
 

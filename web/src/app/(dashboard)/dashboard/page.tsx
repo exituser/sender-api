@@ -35,6 +35,10 @@ interface DashboardSummary {
     failed: number;
     queued: number;
   };
+  delivery_tracking: {
+    configured: boolean;
+    label: string;
+  };
   audience: {
     unsubscribed_contacts: number;
     suppressed: number;
@@ -240,7 +244,7 @@ export default function DashboardPage() {
         )}
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-3" aria-label="Workspace health">
+      <section className="grid gap-4 lg:grid-cols-4" aria-label="Workspace health">
         <article className="dashboard-stat-card">
           <div className="dashboard-card-heading"><span className="dashboard-card-icon dashboard-card-icon-blue" aria-hidden="true">↗</span><h2>Delivery health</h2></div>
           <p className="dashboard-stat-number">{formatNumber(summary.delivery.delivered)}</p>
@@ -266,6 +270,14 @@ export default function DashboardPage() {
           <p className="mt-2 text-sm leading-6 text-gray-500">Connections keep your app up to date about message activity.</p>
           {summary.webhooks.failed > 0 && <p className="mt-3 text-sm text-red-700">{formatNumber(summary.webhooks.failed)} updates need review</p>}
           <Link href="/webhooks" className="dashboard-card-link">Manage connections <span aria-hidden="true">→</span></Link>
+        </article>
+
+        <article className="dashboard-stat-card">
+          <div className="dashboard-card-heading"><span className="dashboard-card-icon dashboard-card-icon-amber" aria-hidden="true">◎</span><h2>Delivery updates</h2></div>
+          <p className="dashboard-stat-number text-2xl">{summary.delivery_tracking.configured ? "On" : "Off"}</p>
+          <p className="text-sm font-medium text-gray-800">{summary.delivery_tracking.configured ? "Full status updates" : "Accepted status only"}</p>
+          <p className="mt-2 text-sm leading-6 text-gray-500">Know when messages arrive, bounce, or need attention.</p>
+          {!summary.delivery_tracking.configured && <Link href="/docs" className="dashboard-card-link">Read setup guide <span aria-hidden="true">→</span></Link>}
         </article>
       </section>
 

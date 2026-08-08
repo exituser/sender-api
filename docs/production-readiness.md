@@ -55,6 +55,15 @@ provider, DNS, TLS, backups, and a real smoke test are verified together.
   because delivery is at-least-once.
 - `make backup` creates a permission-restricted custom-format PostgreSQL dump.
   Restore is deliberately gated by `CONFIRM_RESTORE=YES`.
+- `infra/systemd/sender-api-backup.service` and `.timer` provide a daily local
+  backup schedule with 14-day rotation under `/home/ubuntu/sender-api-backups`.
+  Install them on the host, then copy
+  the resulting dumps to separate storage and test a restore before launch.
+- The worker purges terminal outbound messages after `EMAIL_RETENTION_DAYS`
+  and parsed inbound messages after `INBOUND_RETENTION_DAYS`; set both to `0`
+  only when an approved retention policy requires indefinite storage.
+- Failed webhook deliveries can be replayed by an owner or admin after the
+  endpoint has been repaired; delivery remains at-least-once.
 
 ## External release gates
 

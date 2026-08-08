@@ -1376,6 +1376,7 @@ body {
 .dashboard-card-icon-blue { background: #dbeafe; color: #1d4ed8; }
 .dashboard-card-icon-green { background: #dcfce7; color: #15803d; }
 .dashboard-card-icon-purple { background: #ede9fe; color: #6d28d9; }
+.dashboard-card-icon-amber { background: #fef3c7; color: #b45309; }
 
 .dashboard-stat-number {
   margin-top: 1.25rem;

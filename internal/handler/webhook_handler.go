@@ -53,6 +53,7 @@ func (h *WebhookHandler) Routes() chi.Router {
 	r.Post("/", h.Create)
 	r.Get("/", h.List)
 	r.Get("/{id}/deliveries", h.ListDeliveries)
+	r.Post("/{id}/deliveries/{deliveryId}/replay", h.ReplayDelivery)
 	r.Post("/{id}/test", h.Test)
 	r.Get("/{id}", h.GetByID)
 	r.Patch("/{id}", h.Update)
@@ -295,6 +296,46 @@ func (h *WebhookHandler) ListDeliveries(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, map[string]any{"data": deliveries}, http.StatusOK)
+}
+
+func (h *WebhookHandler) ReplayDelivery(w http.ResponseWriter, r *http.Request) {
+	if !requireRoles(w, r, "owner", "admin") {
+		return
+	}
+	if h.deliveryReader == nil {
+		writeError(w, "webhook delivery queue is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	_, teamID, ok := getTeamID(w, r)
+	if !ok {
+		return
+	}
+	webhookID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid webhook id", http.StatusBadRequest)
+		return
+	}
+	deliveryID, err := uuid.Parse(chi.URLParam(r, "deliveryId"))
+	if err != nil {
+		writeError(w, "invalid delivery id", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.webhookRepo.GetByIDForTeam(r.Context(), teamID, webhookID); err != nil {
+		writeError(w, "webhook not found", http.StatusNotFound)
+		return
+	}
+	replayer, ok := h.deliveryReader.(interface {
+		ReplayFailed(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error
+	})
+	if !ok {
+		writeError(w, "webhook replay is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if err := replayer.ReplayFailed(r.Context(), teamID, webhookID, deliveryID); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "queued", "id": deliveryID.String()}, http.StatusAccepted)
 }
 
 func (h *WebhookHandler) Test(w http.ResponseWriter, r *http.Request) {

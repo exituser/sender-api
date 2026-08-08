@@ -131,6 +131,16 @@ export default function WebhooksPage() {
     }
   };
 
+  const replayDelivery = async (webhookId: string, deliveryId: string) => {
+    setError("");
+    try {
+      await api.webhooks.replay(webhookId, deliveryId);
+      await loadDeliveries(webhookId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "We couldn’t retry this update. Try again.");
+    }
+  };
+
   if (loading) {
     return <div className="py-8 text-center text-sm text-gray-600" aria-busy="true">Loading your connections…</div>;
   }
@@ -215,6 +225,7 @@ export default function WebhooksPage() {
                             <span>{delivery.attempts} attempt{delivery.attempts === 1 ? "" : "s"}</span>
                             <span>{new Date(delivery.created_at).toLocaleString()}</span>
                             {delivery.last_error && <span className="text-red-600">Check the URL and try again.</span>}
+                            {delivery.status === "failed" && <button type="button" onClick={() => void replayDelivery(webhook.id, delivery.id)} className="text-blue-700 hover:underline">Try again</button>}
                           </div>
                         ))}
                       </div>

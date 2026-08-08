@@ -94,6 +94,24 @@ func (r *WebhookDeliveryRepo) RecoverStale(ctx context.Context) error {
 	return nil
 }
 
+func (r *WebhookDeliveryRepo) ReplayFailed(ctx context.Context, teamID, webhookID, deliveryID uuid.UUID) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE webhook_deliveries d
+		SET status = 'pending', attempts = 0, next_attempt_at = NOW(),
+			lease_until = NULL, last_error = NULL, delivered_at = NULL
+		FROM webhooks w
+		WHERE d.id = $1 AND d.webhook_id = $2 AND w.id = d.webhook_id
+		  AND w.team_id = $3 AND d.status = 'failed'
+	`, deliveryID, webhookID, teamID)
+	if err != nil {
+		return fmt.Errorf("replay webhook delivery: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("failed webhook delivery not found")
+	}
+	return nil
+}
+
 // ListForWebhook returns delivery attempts for a webhook owned by teamID.
 // Joining webhooks here keeps the tenant boundary in the query instead of
 // relying on the handler to perform a second, race-prone ownership check.

@@ -160,6 +160,7 @@ type InboundEmailRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*InboundEmail, error)
 	GetByMessageID(ctx context.Context, teamID uuid.UUID, messageID string) (*InboundEmail, error)
 	List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*InboundEmailListResponse, error)
+	PurgeBefore(ctx context.Context, before time.Time) (int64, error)
 }
 
 type WebhookRepository interface {
@@ -180,6 +181,7 @@ type WebhookDeliveryRepository interface {
 	MarkDelivered(ctx context.Context, id uuid.UUID) error
 	MarkFailed(ctx context.Context, id uuid.UUID, reason string, retryAt time.Time) error
 	RecoverStale(ctx context.Context) error
+	ReplayFailed(ctx context.Context, teamID, webhookID, deliveryID uuid.UUID) error
 }
 
 type EmailSender interface {

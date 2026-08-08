@@ -25,6 +25,8 @@ type Config struct {
 	RedisPoolSize                   int
 	WorkerPollInterval              time.Duration
 	InboundVisibilityTimeoutSeconds int
+	EmailRetentionDays              int
+	InboundRetentionDays            int
 
 	AWSRegion                string
 	AWSAccessKeyID           string
@@ -77,6 +79,8 @@ func Load() *Config {
 		RedisPoolSize:                   getPositiveIntEnv("REDIS_POOL_SIZE", 4),
 		WorkerPollInterval:              getDurationEnv("WORKER_POLL_INTERVAL", 5*time.Second),
 		InboundVisibilityTimeoutSeconds: getPositiveIntEnv("INBOUND_SQS_VISIBILITY_TIMEOUT_SECONDS", 120),
+		EmailRetentionDays:              getNonNegativeIntEnv("EMAIL_RETENTION_DAYS", 90),
+		InboundRetentionDays:            getNonNegativeIntEnv("INBOUND_RETENTION_DAYS", 30),
 
 		AWSRegion:                getEnv("AWS_REGION", "eu-west-1"),
 		AWSAccessKeyID:           os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -136,6 +140,9 @@ func (c *Config) Validate() error {
 	}
 	if c.InboundVisibilityTimeoutSeconds != 0 && (c.InboundVisibilityTimeoutSeconds < 1 || c.InboundVisibilityTimeoutSeconds > 43200) {
 		return fmt.Errorf("INBOUND_SQS_VISIBILITY_TIMEOUT_SECONDS must be between 1 and 43200")
+	}
+	if c.EmailRetentionDays < 0 || c.InboundRetentionDays < 0 {
+		return fmt.Errorf("retention days must not be negative")
 	}
 	if c.DailyRecipientLimit < 0 {
 		return fmt.Errorf("DAILY_RECIPIENT_LIMIT must not be negative")

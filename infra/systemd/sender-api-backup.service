@@ -1,0 +1,14 @@
+[Unit]
+Description=Sender API PostgreSQL backup
+After=docker.service
+Requires=docker.service
+ConditionPathExists=/opt/sender-api/.env
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/sender-api
+EnvironmentFile=/opt/sender-api/.env
+Environment=BACKUP_DIR=/home/ubuntu/sender-api-backups
+ExecStart=/bin/sh -c 'mkdir -p "$BACKUP_DIR" && ./scripts/backup-db.sh && find "$BACKUP_DIR" -type f -name "sender-api-*.dump" -mtime +14 -delete'

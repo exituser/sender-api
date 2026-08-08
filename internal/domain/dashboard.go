@@ -41,6 +41,11 @@ type DashboardDelivery struct {
 	Queued     int64 `json:"queued"`
 }
 
+type DashboardTracking struct {
+	Configured bool   `json:"configured"`
+	Label      string `json:"label"`
+}
+
 type DashboardAudience struct {
 	UnsubscribedContacts int64 `json:"unsubscribed_contacts"`
 	Suppressed           int64 `json:"suppressed"`
@@ -69,6 +74,7 @@ type DashboardSummary struct {
 	Alerts      []DashboardAlert    `json:"alerts"`
 	Domains     []DashboardDomain   `json:"domains"`
 	Delivery    DashboardDelivery   `json:"delivery"`
+	Tracking    DashboardTracking   `json:"delivery_tracking"`
 	Audience    DashboardAudience   `json:"audience"`
 	Webhooks    DashboardWebhooks   `json:"webhooks"`
 	Activity    []DashboardActivity `json:"activity"`

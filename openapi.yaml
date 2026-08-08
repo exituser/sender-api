@@ -282,6 +282,20 @@ paths:
     get:
       summary: List recent webhook delivery attempts
       responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /webhooks/{id}/deliveries/{deliveryId}/replay:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - name: deliveryId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - $ref: '#/components/parameters/TeamID'
+    post:
+      summary: Retry a failed webhook delivery
+      responses:
+        '202': { description: Delivery queued for retry, content: { application/json: { schema: { type: object } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
   /webhooks/{id}/test:
     parameters:
       - $ref: '#/components/parameters/ID'
@@ -405,6 +419,7 @@ components:
         alerts: { type: array, items: { type: object } }
         domains: { type: array, items: { type: object } }
         delivery: { type: object }
+        delivery_tracking: { type: object }
         audience: { type: object }
         webhooks: { type: object }
         activity: { type: array, items: { type: object } }

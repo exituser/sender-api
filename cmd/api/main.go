@@ -205,7 +205,7 @@ func main() {
 	stripeClient := billing.NewStripeClient(cfg.StripeSecretKey, cfg.StripeWebhookSecret, cfg.StripePricePro, cfg.StripePriceScale, cfg.StripeSuccessURL, cfg.StripeCancelURL, cfg.StripeReturnURL)
 	billingService := service.NewBillingService(teamRepo, teamRepo, stripeClient, logger)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
-	dashboardService := service.NewDashboardService(dashboardRepo)
+	dashboardService := service.NewDashboardService(dashboardRepo, cfg.OutboundSESTopicArn != "")
 
 	emailHandler := handler.NewEmailHandler(emailService)
 	teamHandler := handler.NewTeamHandler(teamService)

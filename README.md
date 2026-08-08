@@ -177,6 +177,7 @@ error terminology.
 | `PATCH` | `/webhooks/:id` | Update webhook |
 | `DELETE` | `/webhooks/:id` | Delete webhook |
 | `GET` | `/webhooks/:id/deliveries` | List delivery attempts |
+| `POST` | `/webhooks/:id/deliveries/:deliveryId/replay` | Retry a failed delivery |
 | `POST` | `/webhooks/:id/test` | Queue a test delivery |
 
 ### Inbound
@@ -320,6 +321,17 @@ register the public Stripe callback.
 For a release gate and backup/restore procedure, see
 [`docs/production-readiness.md`](docs/production-readiness.md).
 
+The repository also includes systemd units under `infra/systemd/` for a daily
+PostgreSQL backup. They keep a short local rotation only; production must copy
+the dumps to storage outside the application host and periodically test restore.
+Install with:
+
+```bash
+sudo install -m 0644 infra/systemd/sender-api-backup.service infra/systemd/sender-api-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sender-api-backup.timer
+```
+
 ## Quality checks
 
 The backend and frontend checks used by CI can be run locally:
@@ -367,7 +379,7 @@ sender-api/
 ## Tech Stack
 
 - **Backend**: Go + Chi router
-- **Database**: PostgreSQL (Supabase)
+- **Database**: PostgreSQL (local Compose volume by default; Supabase Database is supported when configured)
 - **Queue**: Redis
 - **Email**: Amazon SES v2
 - **Auth**: Supabase Auth (JWT)

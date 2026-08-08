@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -114,4 +116,12 @@ func (r *InboundEmailRepo) List(ctx context.Context, teamID uuid.UUID, limit, of
 		Limit:  limit,
 		Offset: offset,
 	}, nil
+}
+
+func (r *InboundEmailRepo) PurgeBefore(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx, `DELETE FROM inbound_emails WHERE created_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("purge expired inbound emails: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }

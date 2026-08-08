@@ -8,11 +8,16 @@ import (
 )
 
 type DashboardService struct {
-	repo domain.DashboardRepository
+	repo                  domain.DashboardRepository
+	deliveryEventsEnabled bool
 }
 
-func NewDashboardService(repo domain.DashboardRepository) *DashboardService {
-	return &DashboardService{repo: repo}
+func NewDashboardService(repo domain.DashboardRepository, deliveryEventsEnabled ...bool) *DashboardService {
+	enabled := true
+	if len(deliveryEventsEnabled) > 0 {
+		enabled = deliveryEventsEnabled[0]
+	}
+	return &DashboardService{repo: repo, deliveryEventsEnabled: enabled}
 }
 
 func (s *DashboardService) Summary(ctx context.Context, teamID uuid.UUID) (*domain.DashboardSummary, error) {
@@ -25,11 +30,27 @@ func (s *DashboardService) Summary(ctx context.Context, teamID uuid.UUID) (*doma
 		Status:      "ready",
 		StatusLabel: "Ready to send",
 		Delivery:    snapshot.Delivery,
-		Audience:    snapshot.Audience,
-		Webhooks:    snapshot.Webhooks,
-		Activity:    snapshot.Activity,
-		Alerts:      make([]domain.DashboardAlert, 0),
-		Domains:     make([]domain.DashboardDomain, 0, len(snapshot.Domains)),
+		Tracking: domain.DashboardTracking{
+			Configured: s.deliveryEventsEnabled,
+			Label:      "Delivery updates are off",
+		},
+		Audience: snapshot.Audience,
+		Webhooks: snapshot.Webhooks,
+		Activity: snapshot.Activity,
+		Alerts:   make([]domain.DashboardAlert, 0),
+		Domains:  make([]domain.DashboardDomain, 0, len(snapshot.Domains)),
+	}
+	if s.deliveryEventsEnabled {
+		summary.Tracking.Label = "Delivery updates are on"
+	} else {
+		summary.Alerts = append(summary.Alerts, domain.DashboardAlert{
+			Code:        "delivery_tracking_disabled",
+			Severity:    domain.DashboardAlertWarning,
+			Title:       "Delivery updates are not connected",
+			Description: "You can see when a message is accepted, but delivery, bounce, and complaint updates are not connected yet.",
+			ActionLabel: "Read setup guide",
+			ActionHref:  "/docs",
+		})
 	}
 
 	if len(snapshot.Domains) == 0 {

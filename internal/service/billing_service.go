@@ -50,6 +50,7 @@ func (s *BillingService) Summary(ctx context.Context, teamID uuid.UUID) (*domain
 		CancelAtPeriodEnd: team.CancelAtPeriodEnd,
 		HasCustomer:       team.StripeCustomerID != nil && strings.TrimSpace(*team.StripeCustomerID) != "",
 		HasSubscription:   team.StripeSubscriptionID != nil && strings.TrimSpace(*team.StripeSubscriptionID) != "",
+		Configured:        s.stripe != nil && s.stripe.Configured(),
 	}, nil
 }
 

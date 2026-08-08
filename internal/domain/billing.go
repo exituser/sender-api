@@ -9,6 +9,7 @@ type BillingSummary struct {
 	CancelAtPeriodEnd bool       `json:"cancel_at_period_end"`
 	HasCustomer       bool       `json:"has_customer"`
 	HasSubscription   bool       `json:"has_subscription"`
+	Configured        bool       `json:"configured"`
 }
 
 type BillingCheckoutRequest struct {

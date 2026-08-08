@@ -259,6 +259,8 @@ export const api = {
       request(`/webhooks/${id}`, { method: "DELETE" }),
     deliveries: (id: string, limit = 50) =>
       request(`/webhooks/${id}/deliveries?limit=${limit}`),
+    replay: (webhookId: string, deliveryId: string) =>
+      request(`/webhooks/${webhookId}/deliveries/${deliveryId}/replay`, { method: "POST" }),
     test: (id: string) =>
       request(`/webhooks/${id}/test`, { method: "POST" }),
   },

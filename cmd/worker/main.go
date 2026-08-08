@@ -96,6 +96,7 @@ func main() {
 	emailService.SetContactRepository(repository.NewContactRepo(dbPool))
 	emailService.SetPlanResolver(repository.NewTeamRepo(dbPool), cfg.PlanFreeDailyLimit, cfg.PlanProDailyLimit, cfg.PlanScaleDailyLimit)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
+	retentionService := service.NewRetentionService(emailRepo, inboundRepo)
 
 	emailWorker := worker.NewEmailWorker(emailService, redisQueue, logger, cfg.WorkerPollInterval)
 	webhookWorker := worker.NewWebhookWorker(webhookDeliveryRepo, logger, cfg.WorkerPollInterval, cfg.IsProduction())
@@ -110,6 +111,8 @@ func main() {
 	}
 	startWorker(emailWorker.Start)
 	startWorker(webhookWorker.Start)
+	retentionWorker := worker.NewRetentionWorker(retentionService, time.Duration(cfg.EmailRetentionDays)*24*time.Hour, time.Duration(cfg.InboundRetentionDays)*24*time.Hour, logger)
+	startWorker(retentionWorker.Start)
 	if cfg.InboundSQSQueueURL != "" {
 		inboundWorker := worker.NewInboundWorker(
 			s3.NewFromConfig(awsCfg),

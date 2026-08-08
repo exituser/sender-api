@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Sender API PostgreSQL backup timer
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+Unit=sender-api-backup.service
+
+[Install]
+WantedBy=timers.target

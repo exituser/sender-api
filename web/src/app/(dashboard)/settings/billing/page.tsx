@@ -10,6 +10,7 @@ type BillingSummary = {
   cancel_at_period_end: boolean;
   has_customer: boolean;
   has_subscription: boolean;
+  configured: boolean;
 };
 
 export default function BillingPage() {
@@ -73,9 +74,10 @@ export default function BillingPage() {
       <section className="bg-white shadow rounded-lg p-6 space-y-4">
         <h2 className="text-lg font-medium">Change plan</h2>
         <p className="text-sm text-gray-600">Your plan becomes active after payment is confirmed.</p>
+        {!summary?.configured && <output className="block rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900">Paid plans are not available yet. You can keep using the free plan while billing is being connected.</output>}
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-sm"><span className="block text-gray-700 mb-1">Plan</span><select value={selectedPlan} onChange={(event) => setSelectedPlan(event.target.value as "pro" | "scale")} className="border rounded-md px-3 py-2"><option value="pro">Pro</option><option value="scale">Scale</option></select></label>
-          <button type="button" onClick={() => void checkout()} disabled={working} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">Start checkout</button>
+          <button type="button" onClick={() => void checkout()} disabled={working || !summary?.configured} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">Start checkout</button>
         </div>
       </section>
     </div>

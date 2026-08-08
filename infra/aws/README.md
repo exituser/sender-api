@@ -11,7 +11,9 @@ The current runtime uses `AWS_SES_CONFIGSET=default`. Create that named SES
 configuration set once before deploying the application; it is intentionally
 not managed by this stack so an existing configuration set is never replaced
 or adopted implicitly. Event destinations for outbound delivery callbacks are
-also intentionally not enabled until a public callback URL is selected.
+also intentionally not enabled until a public callback URL is selected. The
+separate `infra/aws/outbound-events.yaml` template provisions that destination
+and the HTTPS SNS subscription after the callback URL is confirmed.
 
 The template deliberately does not create an SES receipt rule. A receipt rule
 contains the verified recipient domain and is mail-flow configuration, so it is
@@ -33,6 +35,21 @@ aws sesv2 create-configuration-set \
   --region "${AWS_REGION}" \
   --configuration-set-name default
 ```
+
+For outbound delivery, deploy the separate event stack after the public API is
+available. SNS will send a subscription confirmation to the callback, which
+the API confirms automatically:
+
+```bash
+aws cloudformation deploy \
+  --region "${AWS_REGION}" \
+  --stack-name sender-api-outbound-events \
+  --template-file infra/aws/outbound-events.yaml \
+  --parameter-overrides ConfigurationSetName=default CallbackUrl=https://chydo.lol/api/v1/webhooks/ses
+```
+
+Set the returned `OutboundTopicArn` as `OUTBOUND_SES_TOPIC_ARN`. Set
+`REQUIRE_OUTBOUND_SES_EVENTS=true` only after the subscription is confirmed.
 
 If the configuration set already exists, this command can be skipped.
 

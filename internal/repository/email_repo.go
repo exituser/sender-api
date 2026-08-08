@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -239,6 +240,18 @@ func (r *EmailRepo) Delete(ctx context.Context, id uuid.UUID) error {
 func (r *EmailRepo) DeleteForTeam(ctx context.Context, teamID, id uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `DELETE FROM emails WHERE id = $1 AND team_id = $2`, id, teamID)
 	return err
+}
+
+func (r *EmailRepo) PurgeEmailsBefore(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		DELETE FROM emails
+		WHERE created_at < $1
+		  AND status IN ('sent', 'delivered', 'opened', 'clicked', 'bounced', 'complained', 'failed', 'cancelled')
+	`, before)
+	if err != nil {
+		return 0, fmt.Errorf("purge expired emails: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (r *EmailRepo) AddEvent(ctx context.Context, event *domain.EmailEvent) error {

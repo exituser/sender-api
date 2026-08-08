@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SES outbound delivery events for sender-api.
+
+Parameters:
+  ConfigurationSetName:
+    Type: String
+    Default: default
+  OutboundTopicName:
+    Type: String
+    Default: sender-api-outbound
+  CallbackUrl:
+    Type: String
+    Default: https://chydo.lol/api/v1/webhooks/ses
+
+Resources:
+  OutboundTopic:
+    Type: AWS::SNS::Topic
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TopicName: !Ref OutboundTopicName
+
+  OutboundTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref OutboundTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSESToPublishOutboundEvents
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref OutboundTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  OutboundSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: https
+      Endpoint: !Ref CallbackUrl
+      TopicArn: !Ref OutboundTopic
+
+  OutboundEventDestination:
+    Type: AWS::SES::ConfigurationSetEventDestination
+    Properties:
+      ConfigurationSetName: !Ref ConfigurationSetName
+      EventDestination:
+        Name: sender-api-outbound-events
+        Enabled: true
+        MatchingEventTypes:
+          - SEND
+          - REJECT
+          - BOUNCE
+          - COMPLAINT
+          - DELIVERY
+          - OPEN
+          - CLICK
+          - RENDERING_FAILURE
+          - DELIVERY_DELAY
+        SnsDestination:
+          TopicArn: !Ref OutboundTopic
+
+Outputs:
+  OutboundTopicArn:
+    Description: SNS topic used by the SES outbound event destination.
+    Value: !Ref OutboundTopic
