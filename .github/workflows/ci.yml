@@ -110,8 +110,10 @@ jobs:
           test -f migrations/013_durable_delivery_pipeline.down.sql
           test "$(grep -c './migrations:/opt/sender-api/migrations:ro' docker-compose.yml)" -eq 1
           test "$(grep -c 'service_completed_successfully' docker-compose.yml)" -ge 4
-          test "$(grep -c "version || '|' || dirty" docker-compose.yml)" -eq 1
-          test "$(grep -c 'WEB_HOST_PORT:-3004' docker-compose.yml docker-compose.production.yml)" -ge 2
+          grep -Fq "MAX(version) = 13" docker-compose.yml
+          grep -Fq "THEN '13|f'" docker-compose.yml
+          grep -Fq 'WEB_HOST_PORT:-3004' docker-compose.yml
+          grep -Fq 'WEB_HOST_PORT:-3004' docker-compose.production.yml
 
       - name: Apply migrations and run datastore integration tests
         run: |
