@@ -43,14 +43,14 @@ cd web && npm ci && npm run dev
 ```bash
 # Production Compose requires explicit production values.
 cp .env.production.example .env
-docker compose up
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
 
 # Or build individually
 docker build -f docker/Dockerfile.api -t sender-api .
 docker build -f docker/Dockerfile.worker -t sender-worker .
 ```
 
-The production Compose file keeps host-run `DATABASE_URL` and `REDIS_URL`
+The production Compose files keep host-run `DATABASE_URL` and `REDIS_URL`
 separate from container service addresses. Set `COMPOSE_DATABASE_URL` and
 `COMPOSE_REDIS_URL` explicitly when using managed production services; leave
 them empty for the local `db` and `redis` services.
@@ -58,6 +58,10 @@ them empty for the local `db` and `redis` services.
 For local development use `docker-compose.dev.yml`; the main Compose file is
 fixed to `ENV=production` and fails closed when its public URLs or metrics token
 are missing.
+Startup runs a one-shot migration preflight, asserts clean schema version 13,
+then provisions the least-privilege `APP_DB_USER` login before API, worker, and
+web services start. Redis uses AOF plus periodic snapshots in the named
+`redis_data` volume.
 
 ## API Endpoints
 
@@ -111,6 +115,7 @@ only shows a confirmation page; the POST action performs the unsubscribe.
 | `GET` | `/emails` | List emails |
 | `GET` | `/emails/:id` | Get email |
 | `GET` | `/emails/:id/events` | Get email events |
+| `POST` | `/emails/:id/reconcile` | Resolve a delivery that needs confirmation (owner/admin) |
 | `DELETE` | `/emails/:id` | Cancel scheduled email |
 
 ### Overview
@@ -297,6 +302,10 @@ state application; unknown Stripe prices fail closed to the free plan.
 `011_batch_manifest` prevents a batch idempotency key from being reused with a
 different payload. `012_marketing_unsubscribe` adds email categories and
 unsubscribe suppressions.
+`013_durable_delivery_pipeline` adds durable provider-event and webhook
+pipeline state. The Compose preflight mounts the same `migrations/` directory
+used by `make migrate-up` and fails unless the latest marker is exactly
+`13|false`.
 Apply all migrations with:
 
 ```bash
@@ -304,9 +313,10 @@ DATABASE_URL=postgresql://supabase_admin:postgres@localhost:5432/sender_api make
 ```
 
 The migration command is the single upgrade path for existing and new
-databases. Compose initializes a fresh volume through migration 012 and marks
-it clean at version 12; existing installations must run the command during
-deployment. Compose initialization only runs for a new database volume.
+databases. Existing installations run it automatically as the Compose
+migration preflight before application services start. Compose initialization
+only runs for a new database volume; the preflight is required on every
+deployment.
 Existing installations with
 duplicate normalized domains or nullable tenant IDs must be reviewed before
 applying `003_hardening`; the migration fails rather than silently rewriting

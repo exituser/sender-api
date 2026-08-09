@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/sender-api/sender-api/internal/inbound"
 	"github.com/sender-api/sender-api/internal/service"
+	"github.com/sender-api/sender-api/pkg/metrics"
 	"github.com/sender-api/sender-api/pkg/sns"
 )
 
@@ -23,7 +25,7 @@ var ErrDiscardInboundMessage = errors.New("discard inbound message")
 
 type InboundWorker struct {
 	s3Client          *s3.Client
-	sqsClient         *sqs.Client
+	sqsClient         SQSAPI
 	queueURL          string
 	bucket            string
 	awsRegion         string
@@ -31,13 +33,51 @@ type InboundWorker struct {
 	snsTopicArn       string
 	inboundService    *service.InboundService
 	logger            *slog.Logger
+	concurrency       int
+	metrics           *metrics.WorkerMetrics
+	health            *HealthState
 }
 
-func NewInboundWorker(s3Client *s3.Client, sqsClient *sqs.Client, queueURL, bucket, awsRegion, snsTopicArn string, visibilityTimeout int32, inboundService *service.InboundService, logger *slog.Logger) *InboundWorker {
+type SQSAPI interface {
+	ReceiveMessage(context.Context, *sqs.ReceiveMessageInput, ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
+	DeleteMessage(context.Context, *sqs.DeleteMessageInput, ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
+	ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
+}
+type InboundWorkerOption func(*InboundWorker)
+
+func WithInboundConcurrency(value int) InboundWorkerOption {
+	return func(w *InboundWorker) {
+		if value > 0 {
+			if value > 10 {
+				value = 10
+			}
+			w.concurrency = value
+		}
+	}
+}
+func WithInboundMetrics(value *metrics.WorkerMetrics) InboundWorkerOption {
+	return func(w *InboundWorker) {
+		if value != nil {
+			w.metrics = value
+		}
+	}
+}
+func WithInboundHealth(value *HealthState) InboundWorkerOption {
+	return func(w *InboundWorker) {
+		if value != nil {
+			w.health = value
+		}
+	}
+}
+
+func NewInboundWorker(s3Client *s3.Client, sqsClient SQSAPI, queueURL, bucket, awsRegion, snsTopicArn string, visibilityTimeout int32, inboundService *service.InboundService, logger *slog.Logger, options ...InboundWorkerOption) *InboundWorker {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if visibilityTimeout <= 0 {
 		visibilityTimeout = 120
 	}
-	return &InboundWorker{
+	w := &InboundWorker{
 		s3Client:          s3Client,
 		sqsClient:         sqsClient,
 		queueURL:          queueURL,
@@ -47,11 +87,21 @@ func NewInboundWorker(s3Client *s3.Client, sqsClient *sqs.Client, queueURL, buck
 		snsTopicArn:       snsTopicArn,
 		inboundService:    inboundService,
 		logger:            logger,
+		concurrency:       4,
+		metrics:           metrics.NewWorkerMetrics("inbound"),
+		health:            NewHealthState(),
 	}
+	for _, option := range options {
+		option(w)
+	}
+	return w
 }
+
+func (w *InboundWorker) Health() *HealthState { return w.health }
 
 func (w *InboundWorker) Start(ctx context.Context) {
 	w.logger.Info("inbound worker started", "queue_url_configured", w.queueURL != "")
+	defer w.health.SetReady(false)
 	for {
 		select {
 		case <-ctx.Done():
@@ -62,11 +112,12 @@ func (w *InboundWorker) Start(ctx context.Context) {
 
 		messages, err := w.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(w.queueURL),
-			MaxNumberOfMessages: 10,
+			MaxNumberOfMessages: int32(w.concurrency),
 			WaitTimeSeconds:     20,
 			VisibilityTimeout:   w.visibilityTimeout,
 		})
 		if err != nil {
+			w.health.SetReady(false)
 			if ctx.Err() != nil {
 				return
 			}
@@ -74,22 +125,81 @@ func (w *InboundWorker) Start(ctx context.Context) {
 			sleepContext(ctx, time.Second)
 			continue
 		}
+		w.health.SetReady(true)
 
+		var batch sync.WaitGroup
 		for _, message := range messages.Messages {
-			if err := w.processMessage(ctx, message); err != nil {
-				w.logger.Error("failed to process inbound message", "error", err)
-				if errors.Is(err, ErrDiscardInboundMessage) {
-					if deleteErr := w.deleteMessage(ctx, message); deleteErr != nil {
-						w.logger.Error("failed to acknowledge discarded inbound message", "error", deleteErr)
+			batch.Add(1)
+			go func(message types.Message) {
+				defer batch.Done()
+				started := time.Now()
+				w.metrics.Start()
+				defer func() { w.metrics.ObserveAge(time.Since(started)) }()
+				if err := w.processMessageWithHeartbeat(ctx, message); err != nil {
+					w.metrics.Fail()
+					w.logger.Error("failed to process inbound message", "error", err)
+					if errors.Is(err, ErrDiscardInboundMessage) {
+						if deleteErr := w.deleteMessage(ctx, message); deleteErr != nil {
+							w.health.SetReady(false)
+							w.logger.Error("failed to acknowledge discarded inbound message", "error", deleteErr)
+						}
 					}
+					return
 				}
-				continue
-			}
-			if err := w.deleteMessage(ctx, message); err != nil {
-				w.logger.Error("failed to delete inbound SQS message", "error", err)
+				w.metrics.Complete()
+				if err := w.deleteMessage(ctx, message); err != nil {
+					w.health.SetReady(false)
+					w.logger.Error("failed to delete inbound SQS message", "error", err)
+				}
+			}(message)
+		}
+		batch.Wait()
+		w.health.Heartbeat()
+	}
+}
+
+func (w *InboundWorker) processMessageWithHeartbeat(ctx context.Context, message types.Message) error {
+	interval := time.Duration(w.visibilityTimeout) * time.Second / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	defer func() {
+		close(stop)
+		cancel()
+		<-done
+	}()
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				w.health.Heartbeat()
+				if message.ReceiptHandle == nil {
+					continue
+				}
+				extendCtx, cancelExtend := context.WithTimeout(heartbeatCtx, interval)
+				_, err := w.sqsClient.ChangeMessageVisibility(extendCtx, &sqs.ChangeMessageVisibilityInput{QueueUrl: aws.String(w.queueURL), ReceiptHandle: message.ReceiptHandle, VisibilityTimeout: w.visibilityTimeout})
+				cancelExtend()
+				if err != nil {
+					w.health.SetReady(false)
+					w.metrics.VisibilityExtensionFailed()
+					w.logger.Error("failed to extend inbound message visibility", "error", err)
+				} else {
+					w.metrics.VisibilityExtended()
+				}
+			case <-stop:
+				return
+			case <-heartbeatCtx.Done():
+				return
 			}
 		}
-	}
+	}()
+	return w.processMessage(ctx, message)
 }
 
 func (w *InboundWorker) processMessage(ctx context.Context, message types.Message) error {

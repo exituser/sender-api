@@ -22,6 +22,9 @@ interface Email {
   scheduled_at: string | null;
   created_at: string;
   sent_at: string | null;
+  delivery_review_started_at?: string | null;
+  provider_evidence?: boolean;
+  can_reconcile?: boolean;
 }
 
 interface EmailEvent {
@@ -42,6 +45,7 @@ function statusLabel(status: string) {
     case "bounced": return "Could not deliver";
     case "complained": return "Recipient reported";
     case "failed": return "Needs attention";
+    case "ambiguous": return "Delivery needs review";
     case "cancelled": return "Cancelled";
     default: return "Processing";
   }
@@ -54,6 +58,7 @@ function eventLabel(event: string) {
     case "email.bounced": return "Message could not be delivered";
     case "email.complained": return "Recipient reported a message";
     case "email.failed": return "Message could not be sent";
+    case "email.ambiguous": return "Delivery confirmation needs review";
     case "email.retrying": return "Message will be retried";
     case "email.opened": return "Message opened";
     case "email.clicked": return "Link clicked";
@@ -69,6 +74,7 @@ export default function EmailDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [cancelling, setCancelling] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const emailID = params.id as string;
 
   const loadEmail = useCallback(async () => {
@@ -95,6 +101,7 @@ export default function EmailDetailPage() {
       case "opened":
       case "clicked": return "bg-green-100 text-green-800";
       case "failed": return "bg-red-100 text-red-800";
+      case "ambiguous": return "bg-amber-100 text-amber-900";
       case "bounced":
       case "complained": return "bg-orange-100 text-orange-800";
       case "queued":
@@ -117,6 +124,23 @@ export default function EmailDetailPage() {
     }
   };
 
+  const reconcileDelivery = async (action: "accepted" | "failed") => {
+    const prompt = action === "accepted"
+      ? "Confirm that the delivery service accepted this message?"
+      : "Mark this message as not sent? It will stay closed and will not be retried.";
+    if (!window.confirm(prompt)) return;
+    setReconciling(true);
+    setError("");
+    try {
+      await api.emails.reconcile(emailID, action);
+      await loadEmail();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save the delivery review. Try again.");
+    } finally {
+      setReconciling(false);
+    }
+  };
+
   if (loading) return <div className="text-center py-8">Loading...</div>;
   if (!email) return <div className="py-8 text-center text-sm text-gray-600">Unable to find this message.</div>;
 
@@ -134,6 +158,29 @@ export default function EmailDetailPage() {
       </div>
 
       {error && <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm" role="alert">{error}</div>}
+
+      {email.status === "ambiguous" && (
+        <section className="rounded-xl border border-amber-200 bg-amber-50 p-5" aria-labelledby="delivery-review-title">
+          <h2 id="delivery-review-title" className="font-semibold text-amber-950">We could not confirm the final handoff</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-amber-900">
+            The delivery service may have accepted this message, but its confirmation did not reach us. We will not send it again automatically, so your recipient will not receive a duplicate from a retry.
+          </p>
+          {email.delivery_review_started_at && <p className="mt-2 text-xs text-amber-800">Waiting for review since {new Date(email.delivery_review_started_at).toLocaleString()}.</p>}
+          <p className="mt-3 text-sm leading-6 text-amber-900">
+            {email.provider_evidence
+              ? "A trusted delivery update is available, so an owner or admin can safely confirm that it was accepted."
+              : "Check your delivery service activity first. If the message is not there, close it as not sent."}
+          </p>
+          {email.can_reconcile ? (
+            <div className="mt-4 flex flex-wrap gap-3">
+              {email.provider_evidence && <button type="button" disabled={reconciling} onClick={() => void reconcileDelivery("accepted")} className="rounded-md bg-amber-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">Confirm accepted</button>}
+              <button type="button" disabled={reconciling} onClick={() => void reconcileDelivery("failed")} className="rounded-md border border-amber-400 bg-white px-4 py-2 text-sm font-medium text-amber-950 disabled:opacity-50">Mark as not sent</button>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm font-medium text-amber-950">Ask a workspace owner or admin to complete this review.</p>
+          )}
+        </section>
+      )}
 
       <div className="bg-white shadow rounded-lg p-6 space-y-4">
         <div className="grid grid-cols-2 gap-4">

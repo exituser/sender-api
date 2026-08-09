@@ -38,6 +38,7 @@ type DashboardDelivery struct {
 	Bounced    int64 `json:"bounced"`
 	Complained int64 `json:"complained"`
 	Failed     int64 `json:"failed"`
+	Uncertain  int64 `json:"uncertain"`
 	Queued     int64 `json:"queued"`
 }
 

@@ -263,6 +263,16 @@ func TestBatchItemIdempotencyKeyIsStableAndBounded(t *testing.T) {
 	}
 }
 
+func TestBatchSendErrorDoesNotExposeRecipientOrInternalCause(t *testing.T) {
+	err := &BatchSendError{Index: 2, Cause: errors.New("database failed for private@example.com")}
+	if got := err.Error(); got != "message 3 could not be queued" {
+		t.Fatalf("unexpected public batch error: %q", got)
+	}
+	if !errors.Is(err, err.Cause) {
+		t.Fatal("batch error should retain its cause for server-side classification")
+	}
+}
+
 func TestEmailServiceBlocksSuppressedRecipientBeforePersisting(t *testing.T) {
 	teamID := uuid.New()
 	repo := &quotaEmailRepoStub{}

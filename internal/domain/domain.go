@@ -41,6 +41,7 @@ type Domain struct {
 	MXDNSRecord           *string      `json:"mx_dns_record,omitempty" db:"mx_dns_record"`
 	DMARCDNSRecord        *string      `json:"dmarc_dns_record,omitempty" db:"dmarc_dns_record"`
 	VerificationDNSRecord *string      `json:"verification_dns_record,omitempty" db:"verification_dns_record"`
+	DNSRecords            []DNSRecord  `json:"dns_records" db:"-"`
 	CreatedAt             time.Time    `json:"created_at" db:"created_at"`
 }
 

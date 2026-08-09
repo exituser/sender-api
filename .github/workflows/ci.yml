@@ -76,18 +76,26 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
   compose:
-    name: Compose configuration
+    name: Compose and integration
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          cache: true
+
       - name: Validate production Compose configuration
         run: >-
           CORS_ORIGINS=https://app.example.com
+          AWS_REGION=eu-west-1
           SUPABASE_URL=https://project.supabase.co
           METRICS_TOKEN=ci-metrics-token
           POSTGRES_PASSWORD=ci-postgres-password
+          APP_DB_PASSWORD=ci-app-password
           NEXT_PUBLIC_API_URL=https://api.example.com
           NEXT_PUBLIC_SUPABASE_URL=https://project.supabase.co
           NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-anon-key
@@ -96,25 +104,94 @@ jobs:
       - name: Validate development Compose configuration
         run: docker compose -f docker-compose.dev.yml config --quiet
 
-      - name: Apply migrations to a clean PostgreSQL container
+      - name: Check production migration wiring
+        run: |
+          test -f migrations/013_durable_delivery_pipeline.up.sql
+          test -f migrations/013_durable_delivery_pipeline.down.sql
+          test "$(grep -c './migrations:/opt/sender-api/migrations:ro' docker-compose.yml)" -eq 1
+          test "$(grep -c 'service_completed_successfully' docker-compose.yml)" -ge 4
+          test "$(grep -c "version || '|' || dirty" docker-compose.yml)" -eq 1
+          test "$(grep -c 'WEB_HOST_PORT:-3004' docker-compose.yml docker-compose.production.yml)" -ge 2
+
+      - name: Apply migrations and run datastore integration tests
         run: |
           trap 'docker compose -f docker-compose.dev.yml down -v' EXIT
-          docker compose -f docker-compose.dev.yml up -d db
-          ready=0
-          for attempt in $(seq 1 30); do
-            if docker compose -f docker-compose.dev.yml exec -T db pg_isready -U supabase_admin -d sender_api; then
-              ready=1
+          docker compose -f docker-compose.dev.yml up -d db redis
+          postgres_ready=0
+          for _ in $(seq 1 30); do
+            if docker compose -f docker-compose.dev.yml exec -T db sh -ec \
+              'test "$(head -n 1 /var/lib/postgresql/data/postmaster.pid 2>/dev/null)" = 1 && pg_isready -U supabase_admin -d sender_api'; then
+              postgres_ready=1
               break
             fi
             sleep 2
           done
-          test "$ready" -eq 1
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM webhook_deliveries LIMIT 1"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM pg_indexes WHERE indexname = 'ux_emails_team_idempotency_key'"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM information_schema.columns WHERE table_name = 'emails' AND column_name = 'sending_at'"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 9 AS version, false AS dirty FROM public.schema_migrations WHERE version = 9 AND dirty = false"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM information_schema.columns WHERE table_name = 'domains' AND column_name = 'mx_status'"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM information_schema.columns WHERE table_name = 'teams' AND column_name = 'billing_status'"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM information_schema.tables WHERE table_name = 'suppressions'"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "SELECT 1 FROM information_schema.tables WHERE table_name = 'team_invitations'"
-          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 -c "INSERT INTO teams (id, name, slug) VALUES ('00000000-0000-0000-0000-000000000001', 'migration-check', 'migration-check'); DELETE FROM teams WHERE id = '00000000-0000-0000-0000-000000000001'"
+          test "$postgres_ready" -eq 1
+
+          redis_ready=0
+          for _ in $(seq 1 30); do
+            if docker compose -f docker-compose.dev.yml exec -T redis redis-cli ping | grep -qx PONG; then
+              redis_ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$redis_ready" -eq 1
+
+          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM public.schema_migrations WHERE version = 13 AND dirty = false)
+              OR EXISTS (SELECT 1 FROM public.schema_migrations WHERE version > 13 OR dirty) THEN
+              RAISE EXCEPTION 'schema_migrations must contain clean version 13 and no later or dirty rows';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'provider_event_inbox')
+              OR NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'webhook_outbox') THEN
+              RAISE EXCEPTION 'durable provider inbox or webhook outbox is missing';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'emails' AND column_name = 'ambiguous_at')
+              OR NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'emails' AND column_name = 'send_fence_token')
+              OR NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'emails' AND column_name = 'queue_recovery_pending')
+              OR NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'webhook_deliveries' AND column_name = 'retention_class') THEN
+              RAISE EXCEPTION 'durable delivery columns are missing';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_emails_team_idempotency_key')
+              OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_contacts_team_canonical_email')
+              OR NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ux_suppressions_team_canonical_email') THEN
+              RAISE EXCEPTION 'required uniqueness indexes are missing';
+            END IF;
+          END
+          $$;
+          INSERT INTO teams (id, name, slug)
+          VALUES ('00000000-0000-0000-0000-000000000001', 'migration-check', 'migration-check');
+          DELETE FROM teams WHERE id = '00000000-0000-0000-0000-000000000001';
+          SQL
+
+          docker compose -f docker-compose.dev.yml exec -T db psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 \
+            -v app_role=sender_api_ci -v app_password=ci-app-password -f - < bootstrap-app-role.sql
+          role_flags="$(
+            docker compose -f docker-compose.dev.yml exec -T db \
+              psql -U supabase_admin -d sender_api -At -F '|' -v ON_ERROR_STOP=1 \
+              -c "SELECT rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = 'sender_api_ci'"
+          )"
+          test "$role_flags" = 'f|f|f|f|f|f'
+          role_memberships="$(
+            docker compose -f docker-compose.dev.yml exec -T db \
+              psql -U supabase_admin -d sender_api -At -v ON_ERROR_STOP=1 \
+              -c "SELECT COUNT(*) FROM pg_auth_members membership JOIN pg_roles member ON member.oid = membership.member WHERE member.rolname = 'sender_api_ci'"
+          )"
+          test "$role_memberships" = '0'
+          docker compose -f docker-compose.dev.yml exec -T db \
+            psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 \
+            -c "SET ROLE sender_api_ci; INSERT INTO teams (id, name, slug) VALUES ('00000000-0000-0000-0000-000000000002', 'runtime-check', 'runtime-check'); DELETE FROM teams WHERE id = '00000000-0000-0000-0000-000000000002'"
+          if docker compose -f docker-compose.dev.yml exec -T db \
+            psql -U supabase_admin -d sender_api -v ON_ERROR_STOP=1 \
+            -c "SET ROLE sender_api_ci; CREATE TABLE runtime_role_must_not_create (id integer)"; then
+            echo "runtime database role unexpectedly has DDL privileges" >&2
+            exit 1
+          fi
+
+          POSTGRES_DSN='postgresql://supabase_admin:postgres@127.0.0.1:5432/sender_api?sslmode=disable' \
+            go test -tags=integration ./internal/repository -count=1
+          REDIS_TEST_URL='redis://127.0.0.1:6379/15' \
+            go test -tags=integration ./internal/queue -count=1

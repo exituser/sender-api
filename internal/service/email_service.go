@@ -44,6 +44,26 @@ var ErrUsageUnavailable = errors.New("usage limiter unavailable")
 var ErrRecipientSuppressed = errors.New("recipient is suppressed")
 var ErrRecipientUnsubscribed = errors.New("recipient is unsubscribed")
 var ErrEmailAccepted = errors.New("email was accepted by the provider but could not be fully persisted")
+var ErrEmailOutcomeAmbiguous = errors.New("email provider outcome is ambiguous and will not be retried automatically")
+var ErrDeliveryReconciliationUnavailable = errors.New("delivery review is temporarily unavailable")
+var ErrDeliveryReviewNotNeeded = errors.New("this message no longer needs delivery review")
+var ErrInvalidDeliveryReviewAction = errors.New("choose accepted or failed")
+
+type BatchSendError struct {
+	Index int
+	Cause error
+}
+
+func (e *BatchSendError) Error() string {
+	return fmt.Sprintf("message %d could not be queued", e.Index+1)
+}
+
+func (e *BatchSendError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
 
 type providerAcceptedEmailRepository interface {
 	MarkProviderAccepted(ctx context.Context, id uuid.UUID, messageID string) error
@@ -64,6 +84,8 @@ type EmailService struct {
 	dailyLimit      int
 	planLimits      map[domain.Plan]int
 	unsubscribe     *UnsubscribeService
+	attemptRepo     domain.SendAttemptRepository
+	pipelineRepo    domain.DeliveryPipelineRepository
 }
 
 func (s *EmailService) SetUsageLimiter(limiter domain.UsageLimiter, dailyLimit int) {
@@ -88,7 +110,7 @@ func NewEmailService(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &EmailService{
+	service := &EmailService{
 		emailRepo:       emailRepo,
 		domainRepo:      domainRepo,
 		queue:           queue,
@@ -97,6 +119,8 @@ func NewEmailService(
 		suppressionRepo: suppressionRepo,
 		logger:          logger,
 	}
+	service.attemptRepo, _ = emailRepo.(domain.SendAttemptRepository)
+	return service
 }
 
 func (s *EmailService) SetPlanResolver(teamRepo domain.TeamRepository, freeLimit, proLimit, scaleLimit int) {
@@ -124,6 +148,10 @@ func (s *EmailService) SetContactRepository(repo domain.ContactRepository) {
 
 func (s *EmailService) SetUnsubscribeService(unsubscribe *UnsubscribeService) {
 	s.unsubscribe = unsubscribe
+}
+
+func (s *EmailService) SetDeliveryPipelineRepository(repo domain.DeliveryPipelineRepository) {
+	s.pipelineRepo = repo
 }
 
 func (s *EmailService) Send(ctx context.Context, teamID uuid.UUID, req *domain.SendEmailRequest) (*domain.EmailResponse, error) {
@@ -402,6 +430,49 @@ func (s *EmailService) GetByID(ctx context.Context, teamID, id uuid.UUID) (*doma
 	return s.emailRepo.GetByIDForTeam(ctx, teamID, id)
 }
 
+func (s *EmailService) ReconcileAmbiguous(ctx context.Context, teamID, id uuid.UUID, req domain.ReconcileEmailRequest) (*domain.Email, error) {
+	if s.pipelineRepo == nil {
+		return nil, ErrDeliveryReconciliationUnavailable
+	}
+	email, err := s.emailRepo.GetByIDForTeam(ctx, teamID, id)
+	if err != nil {
+		return nil, err
+	}
+	if email.Status != domain.EmailStatusAmbiguous || email.SendAttemptState != domain.SendAttemptAmbiguous {
+		return nil, ErrDeliveryReviewNotNeeded
+	}
+
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	eventName := "email.failed"
+	resolvedStatus := domain.EmailStatusFailed
+	if action == "accepted" {
+		eventName = "email.sent"
+		resolvedStatus = domain.EmailStatusSent
+	} else if action != "failed" {
+		return nil, ErrInvalidDeliveryReviewAction
+	}
+	email.Status = resolvedStatus
+	email.SendAttemptState = domain.SendAttemptFailedTerminal
+	if action == "accepted" {
+		email.SendAttemptState = domain.SendAttemptAccepted
+	}
+	event, outbox, err := buildDurableEvent(email, eventName, map[string]any{
+		"source": "manual_reconciliation",
+		"action": action,
+	}, domain.RetentionOutbound)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := s.pipelineRepo.ReconcileAmbiguous(ctx, teamID, id, action, req.ProviderMessageID, event, outbox)
+	if err != nil {
+		return nil, err
+	}
+	if !updated {
+		return nil, ErrDeliveryReviewNotNeeded
+	}
+	return s.emailRepo.GetByIDForTeam(ctx, teamID, id)
+}
+
 func (s *EmailService) List(ctx context.Context, teamID uuid.UUID, limit, offset int) (*domain.EmailListResponse, error) {
 	if limit <= 0 {
 		limit = 50
@@ -441,6 +512,236 @@ func (s *EmailService) Cancel(ctx context.Context, teamID, id uuid.UUID) error {
 }
 
 func (s *EmailService) ProcessFromQueue(ctx context.Context, emailID string) error {
+	if s.attemptRepo != nil && s.pipelineRepo != nil {
+		return s.processFromQueueDurable(ctx, emailID)
+	}
+	return s.processFromQueueLegacy(ctx, emailID)
+}
+
+func (s *EmailService) processFromQueueDurable(ctx context.Context, emailID string) error {
+	id, err := uuid.Parse(emailID)
+	if err != nil {
+		return fmt.Errorf("invalid email ID: %w", err)
+	}
+	email, err := s.emailRepo.GetByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("email not found: %w", err)
+	}
+	if email.Status != domain.EmailStatusQueued {
+		return fmt.Errorf("%w: %s", ErrEmailNotQueued, email.Status)
+	}
+	if email.ScheduledAt != nil && time.Now().Before(*email.ScheduledAt) {
+		return &EmailNotDueError{At: *email.ScheduledAt}
+	}
+
+	claim := domain.SendAttemptClaim{
+		EmailID: id, AttemptID: uuid.New(), FenceToken: uuid.New(),
+		LeaseUntil: time.Now().UTC().Add(2 * time.Minute),
+	}
+	claimed, err := s.attemptRepo.ClaimSendAttempt(ctx, claim)
+	if err != nil {
+		return fmt.Errorf("claim email send attempt: %w", err)
+	}
+	if !claimed {
+		return fmt.Errorf("%w: email was claimed or cancelled by another worker", ErrEmailNotQueued)
+	}
+	email.Status = domain.EmailStatusSending
+	email.SendAttemptID = &claim.AttemptID
+	email.SendFenceToken = &claim.FenceToken
+	email.SendAttemptState = domain.SendAttemptLeased
+	email.SendLeaseUntil = &claim.LeaseUntil
+
+	if err := s.checkRecipientSuppression(ctx, email.TeamID, normalizeEmailRecipients(email)); err != nil {
+		if !errors.Is(err, ErrRecipientSuppressed) && !errors.Is(err, ErrRecipientUnsubscribed) {
+			requeued, stateErr := s.attemptRepo.MarkSendRetryable(ctx, claim)
+			if stateErr != nil {
+				return fmt.Errorf("recipient policy check unavailable: %w; restore queued state: %v", err, stateErr)
+			}
+			if !requeued {
+				return fmt.Errorf("%w: send attempt ownership changed", ErrEmailNotQueued)
+			}
+			return fmt.Errorf("%w: recipient policy check unavailable: %v", ErrEmailDeliveryRetryable, err)
+		}
+		data := map[string]string{"reason": err.Error()}
+		event, outbox, buildErr := buildDurableEvent(email, "email.failed", data, domain.RetentionOutbound)
+		if buildErr != nil {
+			return buildErr
+		}
+		persisted, persistErr := s.pipelineRepo.FinalizeFailed(ctx, claim, event, outbox)
+		if persistErr != nil {
+			return fmt.Errorf("recipient suppression check failed: %w; persist failure: %v", err, persistErr)
+		}
+		if !persisted {
+			return fmt.Errorf("%w: send attempt ownership changed", ErrEmailNotQueued)
+		}
+		return fmt.Errorf("%w: %v", ErrEmailDeliveryFailed, err)
+	}
+
+	claim.LeaseUntil = time.Now().UTC().Add(2 * time.Minute)
+	started, err := s.attemptRepo.MarkSendStarted(ctx, claim)
+	if err != nil {
+		return fmt.Errorf("mark provider send started: %w", err)
+	}
+	if !started {
+		return fmt.Errorf("%w: send attempt lease changed", ErrEmailNotQueued)
+	}
+	email.SendAttemptState = domain.SendAttemptStarted
+	email.SendLeaseUntil = &claim.LeaseUntil
+	s.recordEvent(ctx, id, "email.sending", nil)
+
+	sendCtx, cancelSend := context.WithTimeout(ctx, 30*time.Second)
+	providerMessageID, sendErr := s.sender.Send(sendCtx, email)
+	cancelSend()
+	if sendErr != nil {
+		data := deliveryErrorEventData(sendErr)
+		if domain.DeliveryOutcomeUnknown(sendErr) {
+			event, outbox, buildErr := buildDurableEvent(email, "email.ambiguous", data, domain.RetentionOutbound)
+			if buildErr != nil {
+				return fmt.Errorf("%w: build delivery review event: %v", ErrEmailOutcomeAmbiguous, buildErr)
+			}
+			persisted, persistErr := s.finalizeAmbiguousOutcome(ctx, claim, event, outbox)
+			if persistErr != nil {
+				s.logger.Error("failed to persist unknown provider outcome", "email_id", id, "attempt_id", claim.AttemptID, "error", persistErr)
+				return fmt.Errorf("%w: provider outcome is unknown and local review state is pending: %v", ErrEmailOutcomeAmbiguous, sendErr)
+			}
+			if !persisted {
+				return fmt.Errorf("%w: send attempt ownership changed", ErrEmailOutcomeAmbiguous)
+			}
+			return fmt.Errorf("%w: %v", ErrEmailOutcomeAmbiguous, sendErr)
+		}
+		if domain.IsRetryableDeliveryError(sendErr) {
+			requeued, stateErr := s.attemptRepo.MarkSendRetryable(ctx, claim)
+			if stateErr != nil {
+				return fmt.Errorf("retryable send failed: %w; restore queued state: %v", sendErr, stateErr)
+			}
+			if !requeued {
+				return fmt.Errorf("%w: send attempt ownership changed", ErrEmailNotQueued)
+			}
+			s.recordEvent(ctx, id, "email.retrying", data)
+			return fmt.Errorf("%w: %v", ErrEmailDeliveryRetryable, sendErr)
+		}
+		event, outbox, buildErr := buildDurableEvent(email, "email.failed", data, domain.RetentionOutbound)
+		if buildErr != nil {
+			return buildErr
+		}
+		persisted, persistErr := s.pipelineRepo.FinalizeFailed(ctx, claim, event, outbox)
+		if persistErr != nil {
+			return fmt.Errorf("send failed: %w; persist terminal failure: %v", sendErr, persistErr)
+		}
+		if !persisted {
+			return fmt.Errorf("%w: send attempt ownership changed", ErrEmailNotQueued)
+		}
+		return fmt.Errorf("%w: %v", ErrEmailDeliveryFailed, sendErr)
+	}
+
+	providerMessageID = strings.TrimSpace(providerMessageID)
+	if providerMessageID == "" {
+		event, outbox, buildErr := buildDurableEvent(email, "email.ambiguous", map[string]string{"reason": "provider returned no message id"}, domain.RetentionOutbound)
+		if buildErr != nil {
+			return fmt.Errorf("%w: build delivery review event: %v", ErrEmailOutcomeAmbiguous, buildErr)
+		}
+		if _, persistErr := s.finalizeAmbiguousOutcome(ctx, claim, event, outbox); persistErr != nil {
+			s.logger.Error("failed to persist provider response without a receipt", "email_id", id, "attempt_id", claim.AttemptID, "error", persistErr)
+			return fmt.Errorf("%w: provider returned no message id; persist ambiguity: %v", ErrEmailOutcomeAmbiguous, persistErr)
+		}
+		return fmt.Errorf("%w: provider returned no message id", ErrEmailOutcomeAmbiguous)
+	}
+	email.ProviderMessageID = &providerMessageID
+	email.Status = domain.EmailStatusSent
+	email.SendAttemptState = domain.SendAttemptAccepted
+	event, outbox, err := buildDurableEvent(email, "email.sent", nil, domain.RetentionOutbound)
+	if err != nil {
+		return fmt.Errorf("build accepted email event: %w", err)
+	}
+
+	// The provider call is irreversible. Finish persistence on a short context
+	// that survives worker cancellation, retrying only the local transaction.
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancelPersist()
+	var lastPersistErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		persisted, persistErr := s.pipelineRepo.FinalizeAccepted(persistCtx, claim, providerMessageID, event, outbox)
+		if persistErr == nil && persisted {
+			return nil
+		}
+		if persistErr == nil {
+			lastPersistErr = fmt.Errorf("send attempt ownership changed before acceptance commit")
+			break
+		}
+		lastPersistErr = persistErr
+		if attempt < 2 {
+			timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-persistCtx.Done():
+				timer.Stop()
+				attempt = 3
+			}
+		}
+	}
+	s.logger.Error("provider accepted email but local acceptance is unresolved", "email_id", id, "attempt_id", claim.AttemptID, "error", lastPersistErr)
+	ambiguousEmail := *email
+	ambiguousEmail.Status = domain.EmailStatusAmbiguous
+	ambiguousEmail.SendAttemptState = domain.SendAttemptAmbiguous
+	ambiguousEvent, ambiguousOutbox, buildErr := buildDurableEvent(&ambiguousEmail, "email.ambiguous", map[string]string{"reason": "provider acceptance needs local reconciliation"}, domain.RetentionOutbound)
+	if buildErr == nil {
+		ambiguityCtx, cancelAmbiguity := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		_, ambiguityErr := s.pipelineRepo.FinalizeAmbiguous(ambiguityCtx, claim, ambiguousEvent, ambiguousOutbox)
+		cancelAmbiguity()
+		if ambiguityErr != nil {
+			s.logger.Error("failed to persist accepted email as ambiguous", "email_id", id, "attempt_id", claim.AttemptID, "error", ambiguityErr)
+		}
+	}
+	return fmt.Errorf("%w: %v", ErrEmailAccepted, lastPersistErr)
+}
+
+func (s *EmailService) finalizeAmbiguousOutcome(ctx context.Context, claim domain.SendAttemptClaim, event *domain.EmailEvent, outbox *domain.WebhookOutboxEvent) (bool, error) {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		persisted, err := s.pipelineRepo.FinalizeAmbiguous(persistCtx, claim, event, outbox)
+		if err == nil {
+			return persisted, nil
+		}
+		lastErr = err
+		if attempt == 2 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-persistCtx.Done():
+			timer.Stop()
+			return false, errors.Join(lastErr, persistCtx.Err())
+		}
+	}
+	return false, lastErr
+}
+
+func buildDurableEvent(email *domain.Email, eventName string, data any, retentionClass domain.RetentionClass) (*domain.EmailEvent, *domain.WebhookOutboxEvent, error) {
+	eventID := uuid.New()
+	dataJSON := json.RawMessage("{}")
+	if data != nil {
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal email event data: %w", err)
+		}
+		dataJSON = encoded
+	}
+	payload, err := json.Marshal(email)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal email webhook payload: %w", err)
+	}
+	event := &domain.EmailEvent{ID: eventID, EmailID: email.ID, Event: eventName, Timestamp: time.Now().UTC(), Data: dataJSON}
+	outbox := &domain.WebhookOutboxEvent{
+		ID: uuid.New(), TeamID: email.TeamID, EventID: eventID, Event: eventName,
+		Payload: payload, RetentionClass: retentionClass,
+	}
+	return event, outbox, nil
+}
+
+func (s *EmailService) processFromQueueLegacy(ctx context.Context, emailID string) error {
 	id, err := uuid.Parse(emailID)
 	if err != nil {
 		return fmt.Errorf("invalid email ID: %w", err)
@@ -615,7 +916,12 @@ func (s *EmailService) MarkFailedFromQueue(ctx context.Context, emailID, reason 
 	if err != nil {
 		return err
 	}
-	if err := s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusFailed); err != nil {
+	if s.attemptRepo != nil {
+		err = s.attemptRepo.MarkDeadLetterFailed(ctx, id)
+	} else {
+		err = s.emailRepo.UpdateStatus(ctx, id, domain.EmailStatusFailed)
+	}
+	if err != nil {
 		return err
 	}
 	s.recordEvent(ctx, id, "email.failed", map[string]string{"reason": reason})
@@ -623,6 +929,32 @@ func (s *EmailService) MarkFailedFromQueue(ctx context.Context, emailID, reason 
 }
 
 func (s *EmailService) RecoverSending(ctx context.Context) error {
+	if s.attemptRepo != nil {
+		_, err := s.attemptRepo.RecoverExpiredSendAttempts(ctx)
+		if err != nil {
+			return err
+		}
+		ids, err := s.attemptRepo.ListQueueRecoveryPending(ctx, 5000)
+		if err != nil {
+			return fmt.Errorf("list pending queue recovery: %w", err)
+		}
+		var recoveryErrors []error
+		for _, id := range ids {
+			if err := s.queue.Enqueue(ctx, id); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("enqueue recovered send attempt %s: %w", id, err))
+				continue
+			}
+			emailID, parseErr := uuid.Parse(id)
+			if parseErr != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("parse recovered email id %q: %w", id, parseErr))
+				continue
+			}
+			if err := s.attemptRepo.MarkQueueRecoveryEnqueued(ctx, emailID); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("complete queue recovery %s: %w", id, err))
+			}
+		}
+		return errors.Join(recoveryErrors...)
+	}
 	return s.emailRepo.ResetSendingToQueued(ctx)
 }
 
@@ -641,22 +973,48 @@ func (s *EmailService) ListDeadLetters(ctx context.Context, teamID uuid.UUID, li
 		if getErr != nil {
 			continue
 		}
+		if email.Status != domain.EmailStatusFailed {
+			continue
+		}
 		result = append(result, domain.DeadLetter{ID: email.ID.String(), Status: email.Status})
 	}
 	return result, nil
 }
 
 func (s *EmailService) ReplayDeadLetter(ctx context.Context, teamID, emailID uuid.UUID) error {
-	if _, err := s.emailRepo.GetByIDForTeam(ctx, teamID, emailID); err != nil {
+	email, err := s.emailRepo.GetByIDForTeam(ctx, teamID, emailID)
+	if err != nil {
+		return err
+	}
+	if email.Status == domain.EmailStatusAmbiguous || email.SendAttemptState == domain.SendAttemptAmbiguous {
+		return fmt.Errorf("ambiguous provider outcomes cannot be resent; reconcile the provider result instead")
+	}
+	replayToken := uuid.New()
+	if s.attemptRepo != nil {
+		prepared, prepareErr := s.attemptRepo.PrepareDeadLetterReplay(ctx, teamID, emailID, replayToken)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		if !prepared {
+			return fmt.Errorf("email is not a failed dead-letter candidate")
+		}
+	} else if err := s.emailRepo.UpdateStatus(ctx, emailID, domain.EmailStatusQueued); err != nil {
 		return err
 	}
 	if err := s.queue.ReplayDead(ctx, emailID.String()); err != nil {
-		return err
-	}
-	if err := s.emailRepo.UpdateStatus(ctx, emailID, domain.EmailStatusQueued); err != nil {
-		// The queue item is now pending, but a worker must not send a row that
-		// still has an unknown terminal state. Keep it failed until an operator
-		// repairs the database and replays it again.
+		var rollbackErr error
+		if s.attemptRepo != nil {
+			var cancelled bool
+			cancelled, rollbackErr = s.attemptRepo.CancelDeadLetterReplay(ctx, emailID, replayToken)
+			if rollbackErr == nil && !cancelled {
+				rollbackErr = fmt.Errorf("replay ownership changed")
+			}
+		} else {
+			rollbackErr = s.emailRepo.UpdateStatus(ctx, emailID, domain.EmailStatusFailed)
+		}
+		if rollbackErr != nil {
+			return fmt.Errorf("replay dead letter: %w; restore failed status: %v", err, rollbackErr)
+		}
 		return err
 	}
 	s.recordEvent(ctx, emailID, "email.requeued", map[string]string{"reason": "manual_dead_letter_replay"})
@@ -744,10 +1102,7 @@ func (s *EmailService) BatchSend(ctx context.Context, teamID uuid.UUID, reqs []*
 	for index, req := range reqs {
 		resp, _, err := s.SendWithIdempotency(ctx, teamID, req, batchItemIdempotencyKey(batchKey, index))
 		if err != nil {
-			if req == nil {
-				return responses, fmt.Errorf("failed to send email: %w", err)
-			}
-			return responses, fmt.Errorf("failed to send email to %s: %w", strings.Join(req.To, ","), err)
+			return responses, &BatchSendError{Index: index, Cause: err}
 		}
 		responses = append(responses, resp)
 	}

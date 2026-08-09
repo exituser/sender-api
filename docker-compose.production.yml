@@ -1,0 +1,5 @@
+services:
+  # Use together with docker-compose.yml so production is explicit.
+  web:
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-3004}:3000"

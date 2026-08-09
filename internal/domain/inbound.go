@@ -29,6 +29,11 @@ type InboundAttachment struct {
 	Content     []byte `json:"content"`
 }
 
+type ExpiredInboundRecord struct {
+	ID           uuid.UUID
+	RawObjectKey string
+}
+
 type InboundEmailListResponse struct {
 	Data   []InboundEmail `json:"data"`
 	Total  int            `json:"total"`

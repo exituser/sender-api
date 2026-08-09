@@ -8,6 +8,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/sender-api/sender-api/internal/auth"
 	"github.com/sender-api/sender-api/internal/domain"
 	"github.com/sender-api/sender-api/internal/service"
 )
@@ -29,6 +31,7 @@ func (h *EmailHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Get("/{id}", h.GetByID)
 	r.Get("/{id}/events", h.GetEvents)
+	r.Post("/{id}/reconcile", h.ReconcileAmbiguous)
 	r.Delete("/{id}", h.Cancel)
 	return r
 }
@@ -160,9 +163,15 @@ func (h *EmailHandler) BatchSend(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		if len(responses) > 0 {
+			failedItem := len(responses) + 1
+			var batchErr *service.BatchSendError
+			if errors.As(err, &batchErr) {
+				failedItem = batchErr.Index + 1
+			}
 			writeJSON(w, map[string]any{
-				"data":  responses,
-				"error": err.Error(),
+				"data":        responses,
+				"error":       "one message could not be queued; later messages were not processed",
+				"failed_item": failedItem,
 			}, http.StatusMultiStatus)
 			return
 		}
@@ -209,7 +218,7 @@ func (h *EmailHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	if !requirePermission(w, r, "read") {
 		return
 	}
-	_, teamID, ok := getTeamID(w, r)
+	claims, teamID, ok := getTeamID(w, r)
 	if !ok {
 		return
 	}
@@ -222,10 +231,55 @@ func (h *EmailHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 	email, err := h.emailService.GetByID(r.Context(), teamID, id)
 	if err != nil {
-		writeError(w, "email not found", http.StatusNotFound)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, "email not found", http.StatusNotFound)
+		} else {
+			writeError(w, "failed to load email", http.StatusInternalServerError)
+		}
 		return
 	}
+	email.CanReconcile = auth.HasAnyRole(claims, "owner", "admin")
 
+	writeJSON(w, email, http.StatusOK)
+}
+
+func (h *EmailHandler) ReconcileAmbiguous(w http.ResponseWriter, r *http.Request) {
+	if !requireRoles(w, r, "owner", "admin") {
+		return
+	}
+	_, teamID, ok := getTeamID(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	var req domain.ReconcileEmailRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	email, err := h.emailService.ReconcileAmbiguous(r.Context(), teamID, id, req)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, "email not found", http.StatusNotFound)
+		case errors.Is(err, service.ErrInvalidDeliveryReviewAction):
+			writeError(w, "choose accepted or failed", http.StatusBadRequest)
+		case errors.Is(err, domain.ErrDeliveryConfirmationUnavailable):
+			writeError(w, "delivery confirmation is not available yet", http.StatusConflict)
+		case errors.Is(err, service.ErrDeliveryReviewNotNeeded):
+			writeError(w, "this message no longer needs review", http.StatusConflict)
+		default:
+			writeError(w, "delivery review is temporarily unavailable", http.StatusServiceUnavailable)
+		}
+		return
+	}
+	email.CanReconcile = true
 	writeJSON(w, email, http.StatusOK)
 }
 

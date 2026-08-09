@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/sender-api/sender-api/internal/billing"
 	"github.com/sender-api/sender-api/internal/domain"
 )
@@ -191,16 +192,26 @@ func (s *BillingService) applyBillingEvent(ctx context.Context, eventID string, 
 
 func (s *BillingService) resolveTeam(ctx context.Context, metadataTeamID, customerID, subscriptionID string) (*domain.Team, error) {
 	if id, err := uuid.Parse(strings.TrimSpace(metadataTeamID)); err == nil && id != uuid.Nil {
-		return s.teamRepo.GetByID(ctx, id)
+		team, err := s.teamRepo.GetByID(ctx, id)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		if err == nil {
+			return team, nil
+		}
 	}
 	if customerID != "" {
 		if team, err := s.store.GetByStripeCustomerID(ctx, customerID); err == nil {
 			return team, nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
 		}
 	}
 	if subscriptionID != "" {
 		if team, err := s.store.GetByStripeSubscriptionID(ctx, subscriptionID); err == nil {
 			return team, nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
 		}
 	}
 	return nil, nil

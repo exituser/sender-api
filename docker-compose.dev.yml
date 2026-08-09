@@ -28,7 +28,6 @@ services:
       STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL:-http://localhost:3000/settings/billing?cancelled=1}
       STRIPE_RETURN_URL: ${STRIPE_RETURN_URL:-http://localhost:3000/settings/billing}
       SUPABASE_URL: ${SUPABASE_URL:-http://localhost:54321}
-      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0}
       INBOUND_S3_BUCKET: ${INBOUND_S3_BUCKET:-sender-api-inbound}
@@ -61,6 +60,7 @@ services:
       REDIS_URL: redis:6379
       REDIS_POOL_SIZE: ${REDIS_POOL_SIZE:-4}
       WORKER_POLL_INTERVAL: ${WORKER_POLL_INTERVAL:-5s}
+      WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-8090}
       AWS_REGION: ${AWS_REGION:-eu-west-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
@@ -83,8 +83,8 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "test \"$$(cat /proc/1/comm)\" = worker"]
-      interval: 30s
+      test: ["CMD-SHELL", "wget -q -T 3 -O /dev/null http://127.0.0.1:$${WORKER_HEALTH_PORT:-8090}/readyz"]
+      interval: 15s
       timeout: 5s
       retries: 3
       start_period: 10s
@@ -134,9 +134,16 @@ services:
       - ./migrations/007_team_invitations.up.sql:/docker-entrypoint-initdb.d/07_team_invitations.sql
       - ./migrations/008_ses_domain_identity.up.sql:/docker-entrypoint-initdb.d/08_ses_domain_identity.sql
       - ./migrations/009_billing_state.up.sql:/docker-entrypoint-initdb.d/09_billing_state.sql
-      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/10_compose_version.sql
+      - ./migrations/010_billing_event_ordering.up.sql:/docker-entrypoint-initdb.d/10_billing_event_ordering.sql
+      - ./migrations/011_batch_manifest.up.sql:/docker-entrypoint-initdb.d/11_batch_manifest.sql
+      - ./migrations/012_marketing_unsubscribe.up.sql:/docker-entrypoint-initdb.d/12_marketing_unsubscribe.sql
+      - ./migrations/013_durable_delivery_pipeline.up.sql:/docker-entrypoint-initdb.d/13_durable_delivery_pipeline.sql
+      - ./migrations/compose-version.sql:/docker-entrypoint-initdb.d/14_compose_version.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-supabase_admin} -d $${POSTGRES_DB:-sender_api}"]
+      # The Supabase image briefly starts a temporary postmaster while running
+      # init scripts. Only PID 1 is the final server that application clients
+      # may safely use.
+      test: ["CMD-SHELL", "test \"$$(head -n 1 /var/lib/postgresql/data/postmaster.pid 2>/dev/null)\" = 1 && pg_isready -U $${POSTGRES_USER:-supabase_admin} -d $${POSTGRES_DB:-sender_api}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -149,6 +156,7 @@ services:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

@@ -28,7 +28,7 @@ export default function DocsPage() {
       <div className="docs-container">
         <p className="landing-eyebrow">API reference / 01</p>
         <h1>Send your first<br /><em>transactional email.</em></h1>
-        <p className="docs-lead">The shortest path from a product event to a provider-tracked message. Authenticate with a team-scoped API key, send through one endpoint, and follow the resulting events.</p>
+        <p className="docs-lead">The shortest path from a product event to a message you can follow. Authenticate with a workspace API key, send through one endpoint, and see what happens next.</p>
 
         <section className="docs-section">
           <div className="docs-section-heading">
@@ -36,26 +36,26 @@ export default function DocsPage() {
             <p>Queue one message for delivery.</p>
           </div>
           <div className="docs-code-panel">
-            <pre aria-label="Send an email with curl"><CodeLine><span className="code-muted">curl</span> https://chydo.lol/api/v1/emails \</CodeLine><CodeLine>  <span className="code-muted">-H</span> <span className="code-string">&quot;Authorization: Bearer re_live_...&quot;</span> \</CodeLine><CodeLine>  <span className="code-muted">-H</span> <span className="code-string">&quot;Idempotency-Key: welcome-user-42&quot;</span> \</CodeLine><CodeLine>  <span className="code-muted">-H</span> <span className="code-string">&quot;Content-Type: application/json&quot;</span> \</CodeLine><CodeLine>  <span className="code-muted">-d</span> <span className="code-string">&apos;{`{`}&quot;from&quot;: &quot;hello@chydo.lol&quot;,</span></CodeLine><CodeLine>     <span className="code-string">&quot;to&quot;: [&quot;you@example.com&quot;],</span></CodeLine><CodeLine>     <span className="code-string">&quot;subject&quot;: &quot;Welcome&quot;,</span></CodeLine><CodeLine>     <span className="code-string">&quot;text&quot;: &quot;Welcome to the team&quot;{`}`}&apos;</span></CodeLine></pre>
-            <div className="docs-response"><span>201</span><code>{`{"id":"…","status":"queued"}`}</code></div>
+            <pre aria-label="Send an email with curl"><CodeLine><span className="code-muted">curl</span> https://chydo.lol/api/v1/emails \</CodeLine><CodeLine>  <span className="code-muted">-H</span> <span className="code-string">&quot;Authorization: Bearer re_live_...&quot;</span> \</CodeLine><CodeLine>  <span className="code-muted">-H</span> <span className="code-string">&quot;Idempotency-Key: welcome-user-42&quot;</span> \</CodeLine><CodeLine>  <span className="code-muted">-H</span> <span className="code-string">&quot;Content-Type: application/json&quot;</span> \</CodeLine><CodeLine>  <span className="code-muted">-d</span> <span className="code-string">&apos;{`{`}&quot;from&quot;: &quot;hello@yourdomain.com&quot;,</span></CodeLine><CodeLine>     <span className="code-string">&quot;to&quot;: [&quot;you@example.com&quot;],</span></CodeLine><CodeLine>     <span className="code-string">&quot;subject&quot;: &quot;Welcome&quot;,</span></CodeLine><CodeLine>     <span className="code-string">&quot;text&quot;: &quot;Welcome to the team&quot;{`}`}&apos;</span></CodeLine></pre>
+            <div className="docs-response"><span>201</span><code>{`{"id":"019..."}`}</code></div>
           </div>
         </section>
 
         <section className="docs-section docs-contract-grid">
           <article>
             <span className="docs-number">01</span>
-            <h2>Idempotent by default</h2>
-            <p>Reuse the same <code>Idempotency-Key</code> when a request times out. The API returns the original send instead of creating a duplicate.</p>
+            <h2>Retry safely with one key</h2>
+            <p>Send an <code>Idempotency-Key</code> and reuse it if a request times out. The API returns the original message instead of creating a duplicate.</p>
           </article>
           <article>
             <span className="docs-number">02</span>
-            <h2>Provider events stay linked</h2>
-            <p>Read the message status and its event history, then deliver the same changes to your product through signed webhooks.</p>
+            <h2>See what happened</h2>
+            <p>Read the message status and its history, then receive the same updates in your product through signed webhooks.</p>
           </article>
           <article>
             <span className="docs-number">03</span>
-            <h2>Domains are visible</h2>
-            <p>Connect a sender domain and track SPF, DKIM, DMARC, verification, and Amazon SES state from the dashboard.</p>
+            <h2>Know when your domain is ready</h2>
+            <p>Connect a sender domain and follow each setup check from one clear dashboard.</p>
           </article>
         </section>
 

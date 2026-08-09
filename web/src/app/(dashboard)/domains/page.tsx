@@ -11,6 +11,7 @@ interface Domain {
   dkim_status: string;
   dmarc_status: string;
   created_at: string;
+  dns_records?: DNSRecord[];
 }
 
 interface DNSRecord {
@@ -23,6 +24,7 @@ interface DNSRecord {
 }
 
 interface DomainSetup {
+  id: string;
   name: string;
   dns_records: DNSRecord[];
 }
@@ -73,17 +75,30 @@ export default function DomainsPage() {
   const [error, setError] = useState("");
   const [setup, setSetup] = useState<DomainSetup | null>(null);
 
+  const selectSetup = useCallback((item: Domain) => {
+    if (!item.dns_records?.length) {
+      setSetup(null);
+      return;
+    }
+    window.localStorage.setItem("sender-api.domain-setup-id", item.id);
+    setSetup({ id: item.id, name: item.name, dns_records: item.dns_records });
+  }, []);
+
   const loadDomains = useCallback(async () => {
     setError("");
     try {
       const data = await api.domains.list() as { data: Domain[] };
-      setDomains(data.data || []);
+      const nextDomains = data.data || [];
+      setDomains(nextDomains);
+      const savedID = window.localStorage.getItem("sender-api.domain-setup-id");
+      const selected = nextDomains.find((item) => item.id === savedID) ?? nextDomains[0];
+      if (selected) selectSetup(selected);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load your domains. Try again.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectSetup]);
 
   useEffect(() => {
     void Promise.resolve().then(loadDomains);
@@ -97,6 +112,7 @@ export default function DomainsPage() {
       setName("");
       setShowForm(false);
       setSetup(created);
+      window.localStorage.setItem("sender-api.domain-setup-id", created.id);
       await loadDomains();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to add this domain. Check the name and try again.");
@@ -111,6 +127,11 @@ export default function DomainsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to check this domain. Try again.");
     }
+  };
+
+  const viewSetup = (item: Domain) => {
+    selectSetup(item);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   if (loading) return <div className="py-8 text-center text-sm text-gray-600" aria-busy="true">Loading your domains…</div>;
@@ -190,7 +211,10 @@ export default function DomainsPage() {
                   <span className={item.dkim_status === "verified" ? "text-green-700" : "text-gray-600"}>{item.dkim_status === "verified" ? "✓ Email authentication ready" : "○ Email authentication to do"}</span>
                   <span className={item.dmarc_status === "verified" ? "text-green-700" : "text-gray-600"}>{item.dmarc_status === "verified" ? "✓ Sender protection ready" : "○ Sender protection optional for transactional"}</span>
                 </div>
-                {item.status !== "verified" && <button type="button" onClick={() => void verifyDomain(item.id)} className="dashboard-button dashboard-button-secondary mt-5">Check again</button>}
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <button type="button" onClick={() => viewSetup(item)} className="dashboard-button dashboard-button-secondary">View setup</button>
+                  {item.status !== "verified" && <button type="button" onClick={() => void verifyDomain(item.id)} className="dashboard-button dashboard-button-secondary">Check again</button>}
+                </div>
               </article>
             ))}
           </div>

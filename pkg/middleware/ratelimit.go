@@ -12,6 +12,20 @@ import (
 )
 
 func RateLimit(redisClient *redis.Client, scopes ...string) func(http.Handler) http.Handler {
+	return rateLimit(redisClient, rateLimitScope(scopes...), getLimitForPlan)
+}
+
+// RateLimitFixed is intended for authenticated provider callbacks whose burst
+// profile is unrelated to a customer plan. Signature verification remains the
+// trust boundary; this limit only bounds resource use before verification.
+func RateLimitFixed(redisClient *redis.Client, limit int, scopes ...string) func(http.Handler) http.Handler {
+	if limit < 1 {
+		limit = 1
+	}
+	return rateLimit(redisClient, rateLimitScope(scopes...), func(context.Context) int { return limit })
+}
+
+func rateLimit(redisClient *redis.Client, scope string, limitForContext func(context.Context) int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if redisClient == nil {
@@ -20,8 +34,8 @@ func RateLimit(redisClient *redis.Client, scopes ...string) func(http.Handler) h
 			}
 
 			ctx := r.Context()
-			key := getRateLimitKeyForScope(ctx, rateLimitScope(scopes...))
-			limit := getLimitForPlan(ctx)
+			key := getRateLimitKeyForScope(ctx, scope)
+			limit := limitForContext(ctx)
 
 			count, retryAfter, err := incrementRateLimit(ctx, redisClient, key, limit)
 			if err != nil {

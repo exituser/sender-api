@@ -89,6 +89,12 @@ func main() {
 		logger.Error("failed to ping database", "error", err)
 		os.Exit(1)
 	}
+	if err := repository.CheckSchemaVersion(ctx, dbPool); err != nil {
+		logger.Warn("database schema is not ready", "error", err)
+		if cfg.IsProduction() {
+			os.Exit(1)
+		}
+	}
 
 	logger.Info("connected to database")
 
@@ -134,6 +140,7 @@ func main() {
 	suppressionRepo := repository.NewSuppressionRepo(dbPool)
 	batchRepo := repository.NewBatchRepo(dbPool)
 	dashboardRepo := repository.NewDashboardRepo(dbPool)
+	pipelineRepo := repository.NewDeliveryPipelineRepo(dbPool)
 
 	auth.SetVerifyAPIKeyContextFunc(func(ctx context.Context, rawKey string) (*auth.APIKeyContext, error) {
 		verification, err := apiKeyRepo.VerifyAPIKey(ctx, rawKey)
@@ -184,6 +191,7 @@ func main() {
 	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger, suppressionRepo)
 	emailService.SetContactRepository(contactRepo)
 	emailService.SetBatchRepository(batchRepo)
+	emailService.SetDeliveryPipelineRepository(pipelineRepo)
 	var unsubscribeService *service.UnsubscribeService
 	if cfg.PublicAPIURL != "" && cfg.UnsubscribeSigningSecret != "" {
 		signer, signerErr := service.NewUnsubscribeSigner(cfg.UnsubscribeSigningSecret, cfg.PublicAPIURL)
@@ -205,6 +213,7 @@ func main() {
 	stripeClient := billing.NewStripeClient(cfg.StripeSecretKey, cfg.StripeWebhookSecret, cfg.StripePricePro, cfg.StripePriceScale, cfg.StripeSuccessURL, cfg.StripeCancelURL, cfg.StripeReturnURL)
 	billingService := service.NewBillingService(teamRepo, teamRepo, stripeClient, logger)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
+	inboundService.SetDeliveryPipelineRepository(pipelineRepo)
 	dashboardService := service.NewDashboardService(dashboardRepo, cfg.OutboundSESTopicArn != "")
 
 	emailHandler := handler.NewEmailHandler(emailService)
@@ -239,7 +248,8 @@ func main() {
 		readyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		outboundEventsReady := cfg.OutboundSESTopicArn != ""
-		ready := redisReady && (jwtReady || !cfg.IsProduction()) && awsReady && (!cfg.RequireOutboundSESEvents || outboundEventsReady)
+		schemaReady := repository.CheckSchemaVersion(readyCtx, dbPool) == nil
+		ready := redisReady && schemaReady && (jwtReady || !cfg.IsProduction()) && awsReady && (!cfg.RequireOutboundSESEvents || outboundEventsReady)
 		if ready && dbPool.Ping(readyCtx) != nil {
 			ready = false
 		}
@@ -249,11 +259,11 @@ func main() {
 		if !ready {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"not_ready","checks":{"outbound_ses_events":%t}}`, outboundEventsReady)))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"not_ready","checks":{"schema":%t,"outbound_ses_events":%t}}`, schemaReady, outboundEventsReady)))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"ready","checks":{"outbound_ses_events":%t}}`, outboundEventsReady)))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"ready","checks":{"schema":%t,"outbound_ses_events":%t}}`, schemaReady, outboundEventsReady)))
 	})
 	metricsHandler := http.Handler(http.HandlerFunc(metrics.Handler))
 	if cfg.MetricsToken != "" {
@@ -265,7 +275,7 @@ func main() {
 	// that share the /webhooks and /inbound prefixes.
 	if cfg.InboundSQSQueueURL != "" || cfg.InboundSNSTopicArn != "" || cfg.InboundWebhookToken != "" {
 		r.With(
-			pkgmiddleware.RateLimit(redisClient, "inbound"),
+			pkgmiddleware.RateLimitFixed(redisClient, 1000, "inbound_provider"),
 		).Post(
 			"/api/v1/inbound/ses",
 			inboundHandler.HandleSESPayload,
@@ -273,14 +283,14 @@ func main() {
 	}
 	if cfg.OutboundSESTopicArn != "" {
 		r.With(
-			pkgmiddleware.RateLimit(redisClient, "ses"),
+			pkgmiddleware.RateLimitFixed(redisClient, 1000, "ses_provider"),
 		).Post(
 			"/api/v1/webhooks/ses",
 			sesEventHandler.Handle,
 		)
 	}
 	if cfg.StripeWebhookSecret != "" {
-		r.With(pkgmiddleware.RateLimit(redisClient, "stripe")).Post(
+		r.With(pkgmiddleware.RateLimitFixed(redisClient, 300, "stripe_provider")).Post(
 			"/api/v1/webhooks/stripe",
 			billingHandler.HandleWebhook,
 		)

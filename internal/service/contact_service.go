@@ -29,7 +29,7 @@ func (s *ContactService) Create(ctx context.Context, teamID uuid.UUID, req *doma
 	if !validator.IsValidEmail(req.Email) {
 		return nil, fmt.Errorf("invalid contact email")
 	}
-	req.Email = validator.CanonicalEmail(req.Email)
+	req.Email = domain.NormalizeEmail(req.Email)
 	existing, _ := s.contactRepo.GetByEmail(ctx, teamID, req.Email)
 	if existing != nil {
 		return nil, fmt.Errorf("contact with email %s already exists", req.Email)
@@ -88,7 +88,7 @@ func (s *ContactService) Update(ctx context.Context, teamID, id uuid.UUID, req *
 		if !validator.IsValidEmail(*req.Email) {
 			return nil, fmt.Errorf("invalid contact email")
 		}
-		canonical := validator.CanonicalEmail(*req.Email)
+		canonical := domain.NormalizeEmail(*req.Email)
 		contact.Email = canonical
 	}
 	if req.FirstName != nil {
@@ -127,7 +127,7 @@ func (s *ContactService) ImportCSV(ctx context.Context, teamID uuid.UUID, contac
 		if !validator.IsValidEmail(req.Email) {
 			return 0, fmt.Errorf("invalid contact email: %s", req.Email)
 		}
-		req.Email = validator.CanonicalEmail(req.Email)
+		req.Email = domain.NormalizeEmail(req.Email)
 		contact := &domain.Contact{
 			ID:         uuid.New(),
 			TeamID:     teamID,

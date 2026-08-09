@@ -117,6 +117,16 @@ func (s *DashboardService) Summary(ctx context.Context, teamID uuid.UUID) (*doma
 			ActionHref:  "/emails",
 		})
 	}
+	if snapshot.Delivery.Uncertain > 0 {
+		summary.Alerts = append(summary.Alerts, domain.DashboardAlert{
+			Code:        "delivery_review",
+			Severity:    domain.DashboardAlertWarning,
+			Title:       "Some messages need delivery review",
+			Description: "We stopped automatic retries for a few messages because the final delivery confirmation was interrupted. Review them to avoid sending a duplicate.",
+			ActionLabel: "Review messages",
+			ActionHref:  "/emails",
+		})
+	}
 	if snapshot.Webhooks.Failed > 0 {
 		summary.Alerts = append(summary.Alerts, domain.DashboardAlert{
 			Code:        "webhook_delivery",

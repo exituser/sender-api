@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
@@ -22,6 +25,8 @@ import (
 	"github.com/sender-api/sender-api/internal/repository"
 	"github.com/sender-api/sender-api/internal/service"
 	"github.com/sender-api/sender-api/internal/worker"
+	"github.com/sender-api/sender-api/pkg/metrics"
+	pkgmiddleware "github.com/sender-api/sender-api/pkg/middleware"
 )
 
 func main() {
@@ -59,6 +64,10 @@ func main() {
 		logger.Error("failed to ping database", "error", err)
 		os.Exit(1)
 	}
+	if err := repository.CheckSchemaVersion(startupCtx, dbPool); err != nil {
+		logger.Error("database schema is not ready", "error", err)
+		os.Exit(1)
+	}
 
 	redisOptions, err := config.ParseRedisOptions(cfg.RedisURL)
 	if err != nil {
@@ -82,6 +91,7 @@ func main() {
 	}
 
 	sesClient := sesv2.NewFromConfig(awsCfg)
+	s3Client := s3.NewFromConfig(awsCfg)
 
 	emailRepo := repository.NewEmailRepo(dbPool)
 	domainRepo := repository.NewDomainRepo(dbPool)
@@ -89,17 +99,34 @@ func main() {
 	webhookRepo := repository.NewWebhookRepo(dbPool)
 	webhookDeliveryRepo := repository.NewWebhookDeliveryRepo(dbPool)
 	suppressionRepo := repository.NewSuppressionRepo(dbPool)
+	pipelineRepo := repository.NewDeliveryPipelineRepo(dbPool)
 	redisQueue := queue.NewRedisQueue(redisClient)
 	sesMailer := mailer.NewSESMailer(sesClient, cfg.AWSESConfigSet, logger)
 
 	emailService := service.NewEmailService(emailRepo, domainRepo, redisQueue, sesMailer, webhookRepo, webhookDeliveryRepo, logger, suppressionRepo)
 	emailService.SetContactRepository(repository.NewContactRepo(dbPool))
 	emailService.SetPlanResolver(repository.NewTeamRepo(dbPool), cfg.PlanFreeDailyLimit, cfg.PlanProDailyLimit, cfg.PlanScaleDailyLimit)
+	emailService.SetDeliveryPipelineRepository(pipelineRepo)
 	inboundService := service.NewInboundService(inboundRepo, domainRepo, webhookRepo, webhookDeliveryRepo, logger)
-	retentionService := service.NewRetentionService(emailRepo, inboundRepo)
+	inboundService.SetDeliveryPipelineRepository(pipelineRepo)
+	retentionService := service.NewRetentionService(emailRepo, inboundRepo, webhookDeliveryRepo)
+	retentionService.SetInboundObjectDeleter(service.InboundObjectDeleteFunc(func(deleteCtx context.Context, key string) error {
+		_, err := s3Client.DeleteObject(deleteCtx, &s3.DeleteObjectInput{
+			Bucket: aws.String(cfg.InboundS3Bucket),
+			Key:    aws.String(key),
+		})
+		return err
+	}))
 
 	emailWorker := worker.NewEmailWorker(emailService, redisQueue, logger, cfg.WorkerPollInterval)
 	webhookWorker := worker.NewWebhookWorker(webhookDeliveryRepo, logger, cfg.WorkerPollInterval, cfg.IsProduction())
+	webhookWorker.Configure(worker.WithWebhookPipeline(pipelineRepo))
+	providerEventWorker := worker.NewProviderEventWorker(emailService, logger, cfg.WorkerPollInterval)
+	retentionWorker := worker.NewRetentionWorker(retentionService, time.Duration(cfg.EmailRetentionDays)*24*time.Hour, time.Duration(cfg.InboundRetentionDays)*24*time.Hour, logger)
+	healthStates := []*worker.HealthState{emailWorker.Health(), webhookWorker.Health(), providerEventWorker.Health()}
+	if cfg.EmailRetentionDays > 0 || cfg.InboundRetentionDays > 0 {
+		healthStates = append(healthStates, retentionWorker.Health())
+	}
 
 	var workers sync.WaitGroup
 	startWorker := func(run func(context.Context)) {
@@ -111,11 +138,11 @@ func main() {
 	}
 	startWorker(emailWorker.Start)
 	startWorker(webhookWorker.Start)
-	retentionWorker := worker.NewRetentionWorker(retentionService, time.Duration(cfg.EmailRetentionDays)*24*time.Hour, time.Duration(cfg.InboundRetentionDays)*24*time.Hour, logger)
+	startWorker(providerEventWorker.Start)
 	startWorker(retentionWorker.Start)
 	if cfg.InboundSQSQueueURL != "" {
 		inboundWorker := worker.NewInboundWorker(
-			s3.NewFromConfig(awsCfg),
+			s3Client,
 			sqs.NewFromConfig(awsCfg),
 			cfg.InboundSQSQueueURL,
 			cfg.InboundS3Bucket,
@@ -125,17 +152,59 @@ func main() {
 			inboundService,
 			logger,
 		)
+		healthStates = append(healthStates, inboundWorker.Health())
 		startWorker(inboundWorker.Start)
 	}
+
+	healthHandler := worker.NewHealthHandler(healthStates...)
+	healthHandler.AddChecks(
+		func(checkCtx context.Context) error { return dbPool.Ping(checkCtx) },
+		func(checkCtx context.Context) error { return redisClient.Ping(checkCtx).Err() },
+		func(checkCtx context.Context) error { return repository.CheckSchemaVersion(checkCtx, dbPool) },
+	)
+	healthMux := http.NewServeMux()
+	healthMux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	healthMux.Handle("/readyz", healthHandler)
+	metricsHandler := http.Handler(http.HandlerFunc(metrics.Handler))
+	if cfg.MetricsToken != "" {
+		metricsHandler = pkgmiddleware.RequireToken(cfg.MetricsToken)(metricsHandler)
+	}
+	healthMux.Handle("/metrics", metricsHandler)
+	healthServer := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.WorkerHealthPort),
+		Handler:           healthMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+	serverErrors := make(chan error, 1)
+	go func() {
+		logger.Info("worker health server listening", "addr", healthServer.Addr)
+		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErrors <- err
+		}
+	}()
 
 	logger.Info("worker is running")
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	select {
+	case <-quit:
+	case err := <-serverErrors:
+		logger.Error("worker health server failed", "error", err)
+	}
 
 	logger.Info("shutting down worker...")
 	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := healthServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("failed to stop worker health server", "error", err)
+	}
+	shutdownCancel()
 	workers.Wait()
 	logger.Info("worker exited")
 }

@@ -51,6 +51,7 @@ func (r *DashboardRepo) GetSnapshot(ctx context.Context, teamID uuid.UUID) (*dom
 			COUNT(*) FILTER (WHERE status = 'bounced')::bigint,
 			COUNT(*) FILTER (WHERE status = 'complained')::bigint,
 			COUNT(*) FILTER (WHERE status = 'failed')::bigint,
+			COUNT(*) FILTER (WHERE status = 'ambiguous')::bigint,
 			COUNT(*) FILTER (WHERE status IN ('queued', 'sending'))::bigint
 		FROM emails
 		WHERE team_id = $1 AND created_at >= NOW() - INTERVAL '7 days'
@@ -61,6 +62,7 @@ func (r *DashboardRepo) GetSnapshot(ctx context.Context, teamID uuid.UUID) (*dom
 		&snapshot.Delivery.Bounced,
 		&snapshot.Delivery.Complained,
 		&snapshot.Delivery.Failed,
+		&snapshot.Delivery.Uncertain,
 		&snapshot.Delivery.Queued,
 	); err != nil {
 		return nil, fmt.Errorf("load dashboard delivery stats: %w", err)

@@ -33,6 +33,7 @@ interface DashboardSummary {
     bounced: number;
     complained: number;
     failed: number;
+    uncertain: number;
     queued: number;
   };
   delivery_tracking: {
@@ -73,6 +74,7 @@ function activityLabel(event: string) {
     case "email.bounced": return "Message bounced";
     case "email.complained": return "Complaint received";
     case "email.failed": return "Message could not be sent";
+    case "email.ambiguous": return "Delivery needs review";
     case "email.retrying": return "Message will be retried";
     case "email.opened": return "Message opened";
     case "email.clicked": return "Link clicked";
@@ -81,7 +83,7 @@ function activityLabel(event: string) {
 }
 
 function activityTone(event: string) {
-  if (event.includes("failed") || event.includes("bounced") || event.includes("complained")) {
+  if (event.includes("failed") || event.includes("bounced") || event.includes("complained") || event.includes("ambiguous")) {
     return "dashboard-dot dashboard-dot-alert";
   }
   if (event.includes("delivered") || event.includes("sent")) {
@@ -251,6 +253,7 @@ export default function DashboardPage() {
           <p className="text-sm font-medium text-gray-800">{deliverySentence}</p>
           <p className="mt-2 text-sm leading-6 text-gray-500">Last {summary.delivery.period_days} days</p>
           {summary.delivery.failed > 0 && <p className="mt-3 text-sm text-red-700">{formatNumber(summary.delivery.failed)} need review</p>}
+          {summary.delivery.uncertain > 0 && <p className="mt-2 text-sm text-amber-800">{formatNumber(summary.delivery.uncertain)} need delivery confirmation</p>}
           <Link href="/emails" className="dashboard-card-link">Review messages <span aria-hidden="true">→</span></Link>
         </article>
 

@@ -1,4 +1,4 @@
-.PHONY: build run worker dev dev-down test clean migrate-up migrate-down lint tidy backup restore
+.PHONY: build run worker dev dev-down test clean migrate-up migrate-down migrate-check lint tidy backup restore
 
 build:
 	go build -o bin/api ./cmd/api
@@ -26,6 +26,10 @@ clean:
 migrate-up:
 	./scripts/migrate.sh
 
+migrate-check:
+	@test -n "$${DATABASE_URL:-}" || (echo 'DATABASE_URL must be set' >&2; exit 1)
+	@test "$$(psql "$$DATABASE_URL" -Atc "SELECT CASE WHEN MAX(version) = 13 AND COUNT(*) FILTER (WHERE version = 13 AND NOT dirty) = 1 AND COUNT(*) FILTER (WHERE dirty) = 0 THEN '13|f' ELSE 'invalid' END FROM public.schema_migrations")" = '13|f'
+
 migrate-down:
 	migrate -path migrations -database "$(DATABASE_URL)" down
 
@@ -36,7 +40,7 @@ tidy:
 	go mod tidy
 
 backup:
-	./scripts/backup-db.sh
+	./scripts/backup-postgres.sh
 
 restore:
 	./scripts/restore-db.sh "$(BACKUP_FILE)"

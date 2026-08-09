@@ -125,3 +125,40 @@ func (r *InboundEmailRepo) PurgeBefore(ctx context.Context, before time.Time) (i
 	}
 	return tag.RowsAffected(), nil
 }
+
+func (r *InboundEmailRepo) ListExpired(ctx context.Context, before time.Time, limit int) ([]domain.ExpiredInboundRecord, error) {
+	if limit < 1 {
+		limit = 500
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT id, COALESCE(raw_s3_key, '')
+		FROM inbound_emails
+		WHERE created_at < $1
+		ORDER BY created_at, id
+		LIMIT $2
+	`, before, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list expired inbound emails: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.ExpiredInboundRecord, 0)
+	for rows.Next() {
+		var item domain.ExpiredInboundRecord
+		if err := rows.Scan(&item.ID, &item.RawObjectKey); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *InboundEmailRepo) DeleteExpired(ctx context.Context, id uuid.UUID, before time.Time) (bool, error) {
+	tag, err := r.db.Exec(ctx, `DELETE FROM inbound_emails WHERE id = $1 AND created_at < $2`, id, before)
+	if err != nil {
+		return false, fmt.Errorf("delete expired inbound email: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}

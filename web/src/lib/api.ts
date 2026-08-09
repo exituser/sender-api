@@ -93,7 +93,7 @@ async function getActiveTeamId(
 ): Promise<string> {
   if (!accessToken) {
     invalidateActiveTeamCache();
-    return "";
+    throw new Error("Your session has expired. Sign in again to continue.");
   }
 
   if (activeTeamCache?.sessionKey === accessToken) {
@@ -131,7 +131,8 @@ async function fetchActiveTeamId(
     });
     if (!response.ok) {
       invalidateActiveTeamCache();
-      return "";
+      const error = await response.json().catch(() => ({ error: "" }));
+      throw new Error(friendlyError(response.status, error.error || "We couldn’t load your workspace. Try again."));
     }
     const teams = (await response.json()) as { id: string }[];
     const activeTeam = teams.find((team) => team.id === stored) ?? teams[0];
@@ -144,10 +145,15 @@ async function fetchActiveTeamId(
       return activeTeam.id;
     }
     invalidateActiveTeamCache();
-    return "";
-  } catch {
+    throw new Error("We couldn’t find a workspace for your account. Create or join one to continue.");
+  } catch (error) {
     invalidateActiveTeamCache();
-    return "";
+    if (error instanceof Error) {
+      if (error.name === "AbortError") throw new Error("We couldn’t load your workspace in time. Try again.");
+      if (error.name === "TypeError") throw new Error("We couldn’t reach the service. Check your connection and try again.");
+      throw error;
+    }
+    throw new Error("We couldn’t load your workspace. Check your connection and try again.");
   } finally {
     clearTimeout(timeout);
   }
@@ -190,9 +196,11 @@ export const api = {
     get: (id: string) => request(`/emails/${id}`),
     send: (data: unknown, idempotencyKey = createIdempotencyKey()) =>
       request("/emails", { method: "POST", body: data, headers: { "Idempotency-Key": idempotencyKey } }),
-    batch: (data: unknown) =>
-      request("/emails/batch", { method: "POST", body: data }),
+    batch: (data: unknown, idempotencyKey = createIdempotencyKey()) =>
+      request("/emails/batch", { method: "POST", body: data, headers: { "Idempotency-Key": idempotencyKey } }),
     events: (id: string) => request(`/emails/${id}/events`),
+    reconcile: (id: string, action: "accepted" | "failed") =>
+      request(`/emails/${id}/reconcile`, { method: "POST", body: { action } }),
     cancel: (id: string) =>
       request(`/emails/${id}`, { method: "DELETE" }),
   },

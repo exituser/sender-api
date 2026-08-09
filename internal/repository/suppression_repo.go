@@ -21,7 +21,12 @@ func (r *SuppressionRepo) Upsert(ctx context.Context, suppression *domain.Suppre
 		INSERT INTO suppressions (id, team_id, email, reason)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (team_id, email) DO UPDATE
-		SET reason = EXCLUDED.reason, updated_at = NOW()
+		SET reason = CASE
+			WHEN suppressions.reason = 'complaint' OR EXCLUDED.reason = 'complaint' THEN 'complaint'
+			WHEN suppressions.reason = 'bounce' OR EXCLUDED.reason = 'bounce' THEN 'bounce'
+			ELSE 'unsubscribe'
+		END,
+		updated_at = NOW()
 	`, suppression.ID, suppression.TeamID, domain.NormalizeEmail(suppression.Email), suppression.Reason)
 	return err
 }
@@ -30,12 +35,28 @@ func (r *SuppressionRepo) GetByEmails(ctx context.Context, teamID uuid.UUID, ema
 	if len(emails) == 0 {
 		return nil, nil
 	}
+	canonical := make([]string, 0, len(emails))
+	seen := make(map[string]struct{}, len(emails))
+	for _, email := range emails {
+		normalized := domain.NormalizeEmail(email)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		canonical = append(canonical, normalized)
+	}
+	if len(canonical) == 0 {
+		return nil, nil
+	}
 
 	rows, err := r.db.Query(ctx, `
 		SELECT id, team_id, email, reason, created_at, updated_at
 		FROM suppressions
 		WHERE team_id = $1 AND email = ANY($2)
-	`, teamID, emails)
+	`, teamID, canonical)
 	if err != nil {
 		return nil, err
 	}

@@ -2,10 +2,13 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var ErrDeadLetterNotFound = errors.New("email is not in the dead-letter queue")
 
 type EmailStatus string
 
@@ -20,6 +23,18 @@ const (
 	EmailStatusComplained EmailStatus = "complained"
 	EmailStatusFailed     EmailStatus = "failed"
 	EmailStatusCancelled  EmailStatus = "cancelled"
+	EmailStatusAmbiguous  EmailStatus = "ambiguous"
+)
+
+type SendAttemptState string
+
+const (
+	SendAttemptNone           SendAttemptState = "none"
+	SendAttemptLeased         SendAttemptState = "leased"
+	SendAttemptStarted        SendAttemptState = "send_started"
+	SendAttemptAccepted       SendAttemptState = "accepted"
+	SendAttemptAmbiguous      SendAttemptState = "ambiguous"
+	SendAttemptFailedTerminal SendAttemptState = "failed_terminal"
 )
 
 type EmailCategory string
@@ -50,7 +65,14 @@ type Email struct {
 	IdempotencyKey    *string           `json:"-" db:"idempotency_key"`
 	IdempotencyHash   *string           `json:"-" db:"idempotency_hash"`
 	ProviderMessageID *string           `json:"-" db:"provider_message_id"`
+	SendAttemptID     *uuid.UUID        `json:"-" db:"send_attempt_id"`
+	SendFenceToken    *uuid.UUID        `json:"-" db:"send_fence_token"`
+	SendAttemptState  SendAttemptState  `json:"send_attempt_state,omitempty" db:"send_attempt_state"`
+	SendLeaseUntil    *time.Time        `json:"-" db:"send_lease_until"`
 	SendingAt         *time.Time        `json:"-" db:"sending_at"`
+	AmbiguousAt       *time.Time        `json:"delivery_review_started_at,omitempty" db:"ambiguous_at"`
+	ProviderEvidence  bool              `json:"provider_evidence,omitempty" db:"-"`
+	CanReconcile      bool              `json:"can_reconcile,omitempty" db:"-"`
 	ScheduledAt       *time.Time        `json:"scheduled_at,omitempty" db:"scheduled_at"`
 	SentAt            *time.Time        `json:"sent_at,omitempty" db:"sent_at"`
 	CreatedAt         time.Time         `json:"created_at" db:"created_at"`
@@ -88,9 +110,23 @@ type EmailResponse struct {
 	Idempotent bool   `json:"idempotent,omitempty"`
 }
 
+type ReconcileEmailRequest struct {
+	Action            string `json:"action"`
+	ProviderMessageID string `json:"provider_message_id,omitempty"`
+}
+
 type DeadLetter struct {
 	ID     string      `json:"id"`
 	Status EmailStatus `json:"status"`
+}
+
+// QueueReceipt is an opaque ownership proof for one dequeued queue item.
+// Workers must present the same token when acknowledging or requeueing it so
+// one process cannot remove another process's live work.
+type QueueReceipt struct {
+	EmailID    string
+	Token      string
+	LeaseUntil time.Time
 }
 
 type EmailListResponse struct {
@@ -108,4 +144,51 @@ type EmailEvent struct {
 	Data      json.RawMessage `json:"data,omitempty" db:"data"`
 	IPAddress string          `json:"ip_address,omitempty" db:"ip_address"`
 	UserAgent string          `json:"user_agent,omitempty" db:"user_agent"`
+}
+
+// ShouldApplyProviderStatus keeps provider callbacks monotonic while allowing
+// an authenticated callback to resolve a locally ambiguous send. Bounce
+// and complaint are terminal suppression signals and therefore take priority.
+func ShouldApplyProviderStatus(current, target EmailStatus) bool {
+	if target == "" || current == EmailStatusCancelled {
+		return false
+	}
+	if current == EmailStatusComplained {
+		return false
+	}
+	if target == EmailStatusComplained {
+		return true
+	}
+	if current == EmailStatusBounced {
+		return false
+	}
+	if target == EmailStatusBounced {
+		return true
+	}
+	if current == EmailStatusFailed {
+		return false
+	}
+	if target == EmailStatusFailed {
+		return ProviderStatusRank(current) < ProviderStatusRank(EmailStatusDelivered)
+	}
+	return ProviderStatusRank(target) > ProviderStatusRank(current)
+}
+
+func ProviderStatusRank(status EmailStatus) int {
+	switch status {
+	case EmailStatusQueued:
+		return 0
+	case EmailStatusSending, EmailStatusAmbiguous, EmailStatusFailed:
+		return 1
+	case EmailStatusSent:
+		return 2
+	case EmailStatusDelivered:
+		return 3
+	case EmailStatusOpened:
+		return 4
+	case EmailStatusClicked:
+		return 5
+	default:
+		return -1
+	}
 }

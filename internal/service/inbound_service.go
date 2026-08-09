@@ -22,7 +22,12 @@ type InboundService struct {
 	domainRepo   domain.DomainRepository
 	webhookRepo  domain.WebhookRepository
 	deliveryRepo domain.WebhookDeliveryRepository
+	pipelineRepo domain.DeliveryPipelineRepository
 	logger       *slog.Logger
+}
+
+func (s *InboundService) SetDeliveryPipelineRepository(repo domain.DeliveryPipelineRepository) {
+	s.pipelineRepo = repo
 }
 
 func NewInboundService(
@@ -56,6 +61,8 @@ func (s *InboundService) ProcessEmailWithMessageIDAndAttachments(ctx context.Con
 	if messageID != nil && strings.TrimSpace(*messageID) != "" {
 		if _, err := s.inboundRepo.GetByMessageID(ctx, teamID, strings.TrimSpace(*messageID)); err == nil {
 			return nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check inbound message id: %w", err)
 		}
 	}
 
@@ -80,6 +87,27 @@ func (s *InboundService) ProcessEmailWithMessageIDAndAttachments(ctx context.Con
 		Attachments: attachmentsJSON,
 		Headers:     headersJSON,
 		RawS3Key:    &rawS3Key,
+	}
+
+	if s.pipelineRepo != nil {
+		payload, marshalErr := json.Marshal(inbound)
+		if marshalErr != nil {
+			return fmt.Errorf("marshal inbound webhook payload: %w", marshalErr)
+		}
+		eventID := uuid.New()
+		outbox := &domain.WebhookOutboxEvent{
+			ID: uuid.New(), TeamID: teamID, EventID: eventID,
+			Event: "inbound.received", Payload: payload, RetentionClass: domain.RetentionInbound,
+		}
+		if err := s.pipelineRepo.CreateInboundWithOutbox(ctx, inbound, outbox); err != nil {
+			var pgErr *pgconn.PgError
+			if messageID != nil && errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return nil
+			}
+			return fmt.Errorf("persist inbound email and webhook event: %w", err)
+		}
+		s.logger.Info("inbound email processed", "email_id", inbound.ID)
+		return nil
 	}
 
 	if err := s.inboundRepo.Create(ctx, inbound); err != nil {

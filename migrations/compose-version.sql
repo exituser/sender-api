@@ -6,5 +6,5 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations (
 );
 
 INSERT INTO public.schema_migrations (version, dirty)
-VALUES (12, false)
+VALUES (13, false)
 ON CONFLICT (version) DO UPDATE SET dirty = EXCLUDED.dirty;

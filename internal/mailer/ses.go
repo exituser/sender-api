@@ -17,12 +17,16 @@ import (
 )
 
 type SESMailer struct {
-	client    *sesv2.Client
+	client    SESClient
 	configSet string
 	logger    *slog.Logger
 }
 
-func NewSESMailer(client *sesv2.Client, configSet string, logger *slog.Logger) *SESMailer {
+type SESClient interface {
+	SendEmail(context.Context, *sesv2.SendEmailInput, ...func(*sesv2.Options)) (*sesv2.SendEmailOutput, error)
+}
+
+func NewSESMailer(client SESClient, configSet string, logger *slog.Logger) *SESMailer {
 	return &SESMailer{
 		client:    client,
 		configSet: configSet,
@@ -45,6 +49,14 @@ func (m *SESMailer) Send(ctx context.Context, email *domain.Email) (string, erro
 				Body: &types.Body{},
 			},
 		},
+	}
+	input.EmailTags = append(input.EmailTags, types.MessageTag{
+		Name: aws.String("sender_email_id"), Value: aws.String(email.ID.String()),
+	})
+	if email.SendAttemptID != nil {
+		input.EmailTags = append(input.EmailTags, types.MessageTag{
+			Name: aws.String("sender_attempt_id"), Value: aws.String(email.SendAttemptID.String()),
+		})
 	}
 
 	if len(email.CC) > 0 {
@@ -103,20 +115,48 @@ func (m *SESMailer) Send(ctx context.Context, email *domain.Email) (string, erro
 			"error", err,
 		)
 		retryable, smtpCode, enhancedCode, providerCode := sesErrorDetails(err)
-		return "", domain.NewDeliveryErrorWithDetails(
-			fmt.Errorf("ses send failed: %w", err), retryable, smtpCode, enhancedCode, providerCode,
+		return "", domain.NewDeliveryErrorWithOutcomeDetails(
+			fmt.Errorf("ses send failed: %w", err), retryable, sesOutcomeUnknown(err), smtpCode, enhancedCode, providerCode,
 		)
 	}
 
 	m.logger.Info("email sent via SES",
 		"email_id", email.ID,
-		"from", email.From,
 	)
 
 	if output.MessageId == nil || strings.TrimSpace(*output.MessageId) == "" {
-		return "", domain.NewDeliveryError(fmt.Errorf("ses send returned no message id"), false)
+		return "", domain.NewDeliveryErrorWithOutcomeDetails(
+			fmt.Errorf("ses send returned no message id"), false, true, 0, "", "missing_message_id",
+		)
 	}
 	return *output.MessageId, nil
+}
+
+func sesOutcomeUnknown(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return true
+	}
+	if apiErr.ErrorFault() == smithy.FaultServer {
+		return true
+	}
+	code := strings.ToLower(strings.TrimSpace(apiErr.ErrorCode()))
+	for _, marker := range []string{
+		"messagerejected", "reject", "invalid", "validation", "badrequest",
+		"notverified", "configuration", "accessdenied", "sendingpaused",
+		"notfound", "account.suspended",
+	} {
+		if strings.Contains(code, marker) {
+			return false
+		}
+	}
+	// A provider error without a clearly definitive client-side rejection can
+	// arrive after the request body was accepted. Quarantine it instead of
+	// risking a duplicate submission.
+	return true
 }
 
 func sesErrorRetryable(err error) bool {

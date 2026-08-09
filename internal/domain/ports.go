@@ -17,6 +17,7 @@ type DeliveryError struct {
 	SMTPCode           int
 	EnhancedStatusCode string
 	ProviderCode       string
+	OutcomeUnknown     bool
 }
 
 func (e *DeliveryError) Error() string {
@@ -38,6 +39,10 @@ func NewDeliveryError(err error, retryable bool) error {
 }
 
 func NewDeliveryErrorWithDetails(err error, retryable bool, smtpCode int, enhancedStatusCode, providerCode string) error {
+	return NewDeliveryErrorWithOutcomeDetails(err, retryable, false, smtpCode, enhancedStatusCode, providerCode)
+}
+
+func NewDeliveryErrorWithOutcomeDetails(err error, retryable, outcomeUnknown bool, smtpCode int, enhancedStatusCode, providerCode string) error {
 	if err == nil {
 		return fmt.Errorf("email delivery failed")
 	}
@@ -47,7 +52,15 @@ func NewDeliveryErrorWithDetails(err error, retryable bool, smtpCode int, enhanc
 		SMTPCode:           smtpCode,
 		EnhancedStatusCode: enhancedStatusCode,
 		ProviderCode:       providerCode,
+		OutcomeUnknown:     outcomeUnknown,
 	}
+}
+
+func DeliveryOutcomeUnknown(err error) bool {
+	if deliveryErr, ok := DeliveryErrorDetails(err); ok {
+		return deliveryErr.OutcomeUnknown
+	}
+	return false
 }
 
 func DeliveryErrorDetails(err error) (*DeliveryError, bool) {
@@ -188,14 +201,44 @@ type EmailSender interface {
 	Send(ctx context.Context, email *Email) (string, error)
 }
 
+// SendAttemptRepository owns the PostgreSQL-authoritative state machine for
+// provider submission. Queue leases are only coordination hints; every state
+// mutation is fenced by AttemptID and FenceToken.
+type SendAttemptRepository interface {
+	ClaimSendAttempt(ctx context.Context, claim SendAttemptClaim) (bool, error)
+	MarkSendStarted(ctx context.Context, claim SendAttemptClaim) (bool, error)
+	MarkSendRetryable(ctx context.Context, claim SendAttemptClaim) (bool, error)
+	MarkSendAmbiguous(ctx context.Context, claim SendAttemptClaim, reason string) (bool, error)
+	RecoverExpiredSendAttempts(ctx context.Context) ([]string, error)
+	ListQueueRecoveryPending(ctx context.Context, limit int) ([]string, error)
+	MarkQueueRecoveryEnqueued(ctx context.Context, emailID uuid.UUID) error
+	MarkDeadLetterFailed(ctx context.Context, emailID uuid.UUID) error
+	PrepareDeadLetterReplay(ctx context.Context, teamID, emailID, replayToken uuid.UUID) (bool, error)
+	CancelDeadLetterReplay(ctx context.Context, emailID, replayToken uuid.UUID) (bool, error)
+}
+
+type DeliveryPipelineRepository interface {
+	CreateInboundWithOutbox(ctx context.Context, email *InboundEmail, outbox *WebhookOutboxEvent) error
+	FinalizeAccepted(ctx context.Context, claim SendAttemptClaim, providerMessageID string, event *EmailEvent, outbox *WebhookOutboxEvent) (bool, error)
+	FinalizeFailed(ctx context.Context, claim SendAttemptClaim, event *EmailEvent, outbox *WebhookOutboxEvent) (bool, error)
+	FinalizeAmbiguous(ctx context.Context, claim SendAttemptClaim, event *EmailEvent, outbox *WebhookOutboxEvent) (bool, error)
+	ReconcileAmbiguous(ctx context.Context, teamID, emailID uuid.UUID, action, providerMessageID string, event *EmailEvent, outbox *WebhookOutboxEvent) (bool, error)
+	StoreProviderEvent(ctx context.Context, event *ProviderEventInbox) error
+	ClaimProviderEvent(ctx context.Context, eventID *uuid.UUID) (*ProviderEventInbox, error)
+	RetryProviderEvent(ctx context.Context, eventID uuid.UUID, reason string, retryAt time.Time, terminal bool) error
+	ApplyProviderEvent(ctx context.Context, inboxEventID, emailID uuid.UUID, providerMessageID string, targetStatus EmailStatus, event *EmailEvent, outbox *WebhookOutboxEvent, suppressions []Suppression) error
+	DispatchNextOutbox(ctx context.Context) (bool, error)
+	RecoverStalePipelineWork(ctx context.Context) error
+}
+
 type EmailQueue interface {
 	Enqueue(ctx context.Context, emailID string) error
 	Schedule(ctx context.Context, emailID string, at time.Time) error
 	Reschedule(ctx context.Context, emailID string, at time.Time) error
 	PromoteScheduled(ctx context.Context) error
-	Dequeue(ctx context.Context) (string, error)
-	Ack(ctx context.Context, emailID string) error
-	Requeue(ctx context.Context, emailID string, countAttempt bool) error
+	Dequeue(ctx context.Context) (*QueueReceipt, error)
+	Ack(ctx context.Context, receipt *QueueReceipt) error
+	Requeue(ctx context.Context, receipt *QueueReceipt, countAttempt bool) error
 	ListDead(ctx context.Context, limit int) ([]string, error)
 	ReplayDead(ctx context.Context, emailID string) error
 	Recover(ctx context.Context) error

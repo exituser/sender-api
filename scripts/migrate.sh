@@ -3,8 +3,8 @@ set -euo pipefail
 
 : "${DATABASE_URL:?DATABASE_URL is required}"
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
 
 psql_cmd=(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -X)
 
@@ -17,7 +17,7 @@ SQL
 
 migrations=()
 while IFS= read -r migration; do
-	 migrations+=("$migration")
+	migrations+=("$migration")
 done < <(
 	find "$repo_root/migrations" -maxdepth 1 -type f -name '*_*.up.sql' -exec basename {} \; |
 		sort -t_ -k1,1n
@@ -28,7 +28,7 @@ for migration in "${migrations[@]}"; do
         continue
     fi
 
-	state="$(${psql_cmd[@]} -Atc "SELECT COALESCE(MAX(version), 0) || '|' || COALESCE((SELECT dirty FROM public.schema_migrations WHERE version = (SELECT MAX(version) FROM public.schema_migrations)), false) FROM public.schema_migrations;")"
+	state="$("${psql_cmd[@]}" -Atc "SELECT COALESCE(MAX(version), 0) || '|' || COALESCE(BOOL_OR(dirty), false) FROM public.schema_migrations;")"
 	current="${state%%|*}"
 	dirty="${state##*|}"
 	if [[ "$dirty" == "t" ]]; then

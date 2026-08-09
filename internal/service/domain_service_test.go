@@ -1,12 +1,104 @@
 package service
 
 import (
+	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sender-api/sender-api/internal/domain"
 )
+
+type domainServiceRepoStub struct {
+	domain *domain.Domain
+}
+
+func (r *domainServiceRepoStub) Create(context.Context, *domain.Domain) error { return nil }
+func (r *domainServiceRepoStub) GetByID(context.Context, uuid.UUID) (*domain.Domain, error) {
+	return r.domain, nil
+}
+func (r *domainServiceRepoStub) GetByIDForTeam(context.Context, uuid.UUID, uuid.UUID) (*domain.Domain, error) {
+	return r.domain, nil
+}
+func (r *domainServiceRepoStub) GetByName(context.Context, uuid.UUID, string) (*domain.Domain, error) {
+	return nil, nil
+}
+func (r *domainServiceRepoStub) List(context.Context, uuid.UUID) (*domain.DomainListResponse, error) {
+	return &domain.DomainListResponse{Data: []domain.Domain{*r.domain}}, nil
+}
+func (r *domainServiceRepoStub) Update(context.Context, *domain.Domain) error        { return nil }
+func (r *domainServiceRepoStub) UpdateForTeam(context.Context, *domain.Domain) error { return nil }
+func (r *domainServiceRepoStub) Delete(context.Context, uuid.UUID) error             { return nil }
+func (r *domainServiceRepoStub) DeleteForTeam(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
+func (r *domainServiceRepoStub) GetTeamByDomain(context.Context, string) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+
+func TestDomainServiceReconstructsDNSSetupForListAndGet(t *testing.T) {
+	verificationHost := "_sender-api-verification.example.com"
+	dmarcHost := "_dmarc.example.com"
+	spf := "v=spf1 include:amazonses.com ~all"
+	mx := "inbound-smtp.eu-west-1.amazonaws.com"
+	token := "sender-api-verify-token"
+	repo := &domainServiceRepoStub{domain: &domain.Domain{
+		ID: uuid.New(), Name: "example.com", VerificationToken: token,
+		VerificationDNSRecord: &verificationHost, SPFDNSRecord: &spf, MXDNSRecord: &mx,
+		DMARCDNSRecord: &dmarcHost, VerificationStatus: "pending", SPFStatus: "pending",
+		MXStatus: "pending", DMARCStatus: "pending", CreatedAt: time.Now(),
+		DKIMDNSRecords: []domain.DNSRecord{{Type: domain.DNSRecordTypeCNAME, Host: "a._domainkey.example.com", Value: "a.dkim.amazonses.com", TTL: 3600, Status: "pending"}},
+	}}
+	service := NewDomainService(repo, nil, "eu-west-1")
+
+	listed, err := service.List(context.Background(), uuid.New())
+	if err != nil || len(listed.Data) != 1 {
+		t.Fatalf("List() error=%v response=%+v", err, listed)
+	}
+	got := listed.Data[0].DNSRecords
+	if len(got) != 5 || got[2].Host != "_sender-api-verification" || got[2].Value != token || got[3].Value != "v=DMARC1; p=none" {
+		t.Fatalf("unexpected reconstructed list records: %+v", got)
+	}
+
+	fetched, err := service.GetByID(context.Background(), uuid.New(), repo.domain.ID)
+	if err != nil || len(fetched.DNSRecords) != len(got) {
+		t.Fatalf("GetByID() error=%v domain=%+v", err, fetched)
+	}
+}
+
+func TestBuildDNSRecordsReconstructsPersistedSetup(t *testing.T) {
+	spf := "v=spf1 include:amazonses.com ~all"
+	mx := "inbound-smtp.eu-west-1.amazonaws.com"
+	verificationHost := "_sender-api-verification.example.com"
+	dmarcHost := "_dmarc.example.com"
+	d := &domain.Domain{
+		Name:                  "example.com",
+		VerificationToken:     "sender-api-verify-token",
+		VerificationStatus:    "pending",
+		SPFStatus:             "pending",
+		MXStatus:              "pending",
+		DMARCStatus:           "pending",
+		SPFDNSRecord:          &spf,
+		MXDNSRecord:           &mx,
+		VerificationDNSRecord: &verificationHost,
+		DMARCDNSRecord:        &dmarcHost,
+		DKIMDNSRecords: []domain.DNSRecord{{
+			Type: domain.DNSRecordTypeCNAME, Host: "token._domainkey.example.com", Value: "token.dkim.amazonses.com", TTL: 3600,
+		}},
+	}
+
+	records := buildDNSRecords(d)
+	if len(records) != 5 {
+		t.Fatalf("expected five setup records, got %d: %+v", len(records), records)
+	}
+	if records[2].Host != "_sender-api-verification" || records[2].Value != d.VerificationToken {
+		t.Fatalf("verification record was not reconstructed: %+v", records[2])
+	}
+	if records[3].Host != "_dmarc" || !records[1].Optional {
+		t.Fatalf("persisted optional or relative host fields were not reconstructed: %+v", records)
+	}
+}
 
 func TestApplySESIdentityBuildsAllDKIMRecords(t *testing.T) {
 	service := NewDomainService(nil, nil, "eu-west-1")

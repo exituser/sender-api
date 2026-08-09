@@ -22,8 +22,10 @@ func NewWebhookDeliveryRepo(db *pgxpool.Pool) *WebhookDeliveryRepo {
 
 func (r *WebhookDeliveryRepo) CreateDelivery(ctx context.Context, delivery *domain.WebhookDelivery) error {
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO webhook_deliveries (id, webhook_id, event_id, event, payload, status, attempts, next_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, 'pending', 0, NOW())
+		INSERT INTO webhook_deliveries (id, webhook_id, event_id, event, payload, retention_class, status, attempts, next_attempt_at)
+		VALUES ($1, $2, $3, $4, $5,
+			CASE WHEN $4 LIKE 'inbound.%' THEN 'inbound' ELSE 'outbound' END,
+			'pending', 0, NOW())
 		ON CONFLICT (webhook_id, event_id) DO NOTHING
 	`, delivery.ID, delivery.WebhookID, delivery.EventID, delivery.Event, delivery.Payload)
 	return err
@@ -36,7 +38,8 @@ func (r *WebhookDeliveryRepo) ClaimDelivery(ctx context.Context) (*domain.Webhoo
 			SELECT d.id, w.url, w.secret
 			FROM webhook_deliveries d
 			JOIN webhooks w ON w.id = d.webhook_id
-			WHERE d.status = 'pending' AND d.next_attempt_at <= NOW()
+			WHERE w.active = true AND d.status = 'pending' AND d.payload IS NOT NULL
+			  AND d.next_attempt_at <= NOW()
 			ORDER BY d.next_attempt_at, d.created_at
 			FOR UPDATE OF d SKIP LOCKED
 			LIMIT 1
@@ -101,7 +104,8 @@ func (r *WebhookDeliveryRepo) ReplayFailed(ctx context.Context, teamID, webhookI
 			lease_until = NULL, last_error = NULL, delivered_at = NULL
 		FROM webhooks w
 		WHERE d.id = $1 AND d.webhook_id = $2 AND w.id = d.webhook_id
-		  AND w.team_id = $3 AND d.status = 'failed'
+		  AND w.team_id = $3 AND w.active = true AND d.status = 'failed'
+		  AND d.payload IS NOT NULL
 	`, deliveryID, webhookID, teamID)
 	if err != nil {
 		return fmt.Errorf("replay webhook delivery: %w", err)
@@ -110,6 +114,71 @@ func (r *WebhookDeliveryRepo) ReplayFailed(ctx context.Context, teamID, webhookI
 		return fmt.Errorf("failed webhook delivery not found")
 	}
 	return nil
+}
+
+// PurgeByEventClass removes payloads older than before for one webhook event
+// class (for example, outbound or inbound), while retaining delivery metadata.
+func (r *WebhookDeliveryRepo) PurgeByEventClass(ctx context.Context, eventClass string, before time.Time) (int64, error) {
+	if eventClass != "outbound" && eventClass != "inbound" {
+		return 0, fmt.Errorf("unsupported webhook event class %q", eventClass)
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var purged int64
+	tag, err := tx.Exec(ctx, `
+		UPDATE webhook_deliveries
+		SET payload = NULL,
+			status = CASE WHEN status IN ('pending', 'sending') THEN 'failed' ELSE status END,
+			lease_until = NULL,
+			last_error = CASE WHEN status IN ('pending', 'sending')
+				THEN 'payload removed by retention policy' ELSE last_error END
+		WHERE created_at < $1 AND retention_class = $2 AND payload IS NOT NULL
+	`, before, eventClass)
+	if err != nil {
+		return 0, fmt.Errorf("purge %s webhook payloads: %w", eventClass, err)
+	}
+	purged += tag.RowsAffected()
+
+	tag, err = tx.Exec(ctx, `
+		UPDATE webhook_outbox
+		SET payload = NULL,
+			status = CASE WHEN status IN ('pending', 'processing') THEN 'failed' ELSE status END,
+			lease_until = NULL,
+			last_error = CASE WHEN status IN ('pending', 'processing')
+				THEN 'payload removed by retention policy' ELSE last_error END
+		WHERE created_at < $1 AND retention_class = $2 AND payload IS NOT NULL
+	`, before, eventClass)
+	if err != nil {
+		return 0, fmt.Errorf("purge %s webhook outbox payloads: %w", eventClass, err)
+	}
+	purged += tag.RowsAffected()
+
+	if eventClass == "outbound" {
+		tag, err = tx.Exec(ctx, `
+			UPDATE provider_event_inbox
+			SET payload = NULL,
+				status = CASE WHEN status IN ('pending', 'processing') THEN 'ignored' ELSE status END,
+				lease_until = NULL,
+				last_error = CASE WHEN status IN ('pending', 'processing')
+					THEN 'payload removed by retention policy' ELSE last_error END,
+				processed_at = CASE WHEN status IN ('pending', 'processing')
+					THEN COALESCE(processed_at, NOW()) ELSE processed_at END
+			WHERE created_at < $1 AND payload IS NOT NULL
+		`, before)
+		if err != nil {
+			return 0, fmt.Errorf("purge provider event inbox payloads: %w", err)
+		}
+		purged += tag.RowsAffected()
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return purged, nil
 }
 
 // ListForWebhook returns delivery attempts for a webhook owned by teamID.

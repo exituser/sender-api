@@ -71,6 +71,8 @@ export default function EmailsPage() {
         return "bg-green-100 text-green-800";
       case "failed":
         return "bg-red-100 text-red-800";
+      case "ambiguous":
+        return "bg-amber-100 text-amber-900";
       case "queued":
       case "sending":
         return "bg-yellow-100 text-yellow-800";
@@ -93,6 +95,7 @@ export default function EmailsPage() {
       case "bounced": return "Could not deliver";
       case "complained": return "Recipient reported";
       case "failed": return "Needs attention";
+      case "ambiguous": return "Delivery needs review";
       case "cancelled": return "Cancelled";
       default: return "Processing";
     }

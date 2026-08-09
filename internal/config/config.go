@@ -27,6 +27,7 @@ type Config struct {
 	InboundVisibilityTimeoutSeconds int
 	EmailRetentionDays              int
 	InboundRetentionDays            int
+	WorkerHealthPort                int
 
 	AWSRegion                string
 	AWSAccessKeyID           string
@@ -45,9 +46,7 @@ type Config struct {
 	StripeCancelURL     string
 	StripeReturnURL     string
 
-	SupabaseURL        string
-	SupabaseAnonKey    string
-	SupabaseServiceKey string
+	SupabaseURL string
 
 	SentryDSN             string
 	SentryTraceSampleRate float64
@@ -61,33 +60,38 @@ type Config struct {
 	InboundSQSQueueURL  string
 	InboundSNSTopicArn  string
 	InboundWebhookToken string
+
+	parseErrors []string
 }
 
 func Load() *Config {
 	_ = godotenv.Load()
+	loader := envLoader{}
+	dailyRecipientLimit := loader.positiveInt("DAILY_RECIPIENT_LIMIT", 1000)
 
-	return &Config{
+	cfg := &Config{
 		Port:        getEnv("PORT", "8080"),
 		Env:         getEnv("ENV", "development"),
-		Debug:       getBoolEnv("DEBUG", true),
+		Debug:       loader.boolean("DEBUG", true),
 		CORSOrigins: getEnv("CORS_ORIGINS", "http://localhost:3000"),
 
 		DatabaseURL:                     getEnv("DATABASE_URL", "postgresql://supabase_admin:postgres@localhost:5432/sender_api"),
 		RedisURL:                        getEnv("REDIS_URL", "localhost:6379"),
-		DBMaxConns:                      getPositiveIntEnv("DB_MAX_CONNS", 4),
-		DBMinConns:                      getNonNegativeIntEnv("DB_MIN_CONNS", 0),
-		RedisPoolSize:                   getPositiveIntEnv("REDIS_POOL_SIZE", 4),
-		WorkerPollInterval:              getDurationEnv("WORKER_POLL_INTERVAL", 5*time.Second),
-		InboundVisibilityTimeoutSeconds: getPositiveIntEnv("INBOUND_SQS_VISIBILITY_TIMEOUT_SECONDS", 120),
-		EmailRetentionDays:              getNonNegativeIntEnv("EMAIL_RETENTION_DAYS", 90),
-		InboundRetentionDays:            getNonNegativeIntEnv("INBOUND_RETENTION_DAYS", 30),
+		DBMaxConns:                      loader.positiveInt("DB_MAX_CONNS", 4),
+		DBMinConns:                      loader.nonNegativeInt("DB_MIN_CONNS", 0),
+		RedisPoolSize:                   loader.positiveInt("REDIS_POOL_SIZE", 4),
+		WorkerPollInterval:              loader.duration("WORKER_POLL_INTERVAL", 5*time.Second),
+		InboundVisibilityTimeoutSeconds: loader.positiveInt("INBOUND_SQS_VISIBILITY_TIMEOUT_SECONDS", 120),
+		EmailRetentionDays:              loader.nonNegativeInt("EMAIL_RETENTION_DAYS", 90),
+		InboundRetentionDays:            loader.nonNegativeInt("INBOUND_RETENTION_DAYS", 30),
+		WorkerHealthPort:                loader.positiveInt("WORKER_HEALTH_PORT", 8090),
 
 		AWSRegion:                getEnv("AWS_REGION", "eu-west-1"),
 		AWSAccessKeyID:           os.Getenv("AWS_ACCESS_KEY_ID"),
 		AWSSecretAccessKey:       os.Getenv("AWS_SECRET_ACCESS_KEY"),
 		AWSESConfigSet:           os.Getenv("AWS_SES_CONFIGSET"),
 		OutboundSESTopicArn:      os.Getenv("OUTBOUND_SES_TOPIC_ARN"),
-		RequireOutboundSESEvents: getBoolEnv("REQUIRE_OUTBOUND_SES_EVENTS", false),
+		RequireOutboundSESEvents: loader.boolean("REQUIRE_OUTBOUND_SES_EVENTS", false),
 		PublicAPIURL:             strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_API_URL")), "/"),
 		UnsubscribeSigningSecret: os.Getenv("UNSUBSCRIBE_SIGNING_SECRET"),
 
@@ -99,23 +103,23 @@ func Load() *Config {
 		StripeCancelURL:     getEnv("STRIPE_CANCEL_URL", "http://localhost:3000/settings/billing?cancelled=1"),
 		StripeReturnURL:     getEnv("STRIPE_RETURN_URL", "http://localhost:3000/settings/billing"),
 
-		SupabaseURL:        getEnv("SUPABASE_URL", "http://localhost:54321"),
-		SupabaseAnonKey:    os.Getenv("SUPABASE_ANON_KEY"),
-		SupabaseServiceKey: os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
+		SupabaseURL: getEnv("SUPABASE_URL", "http://localhost:54321"),
 
 		SentryDSN:             os.Getenv("SENTRY_DSN"),
-		SentryTraceSampleRate: getFloatEnv("SENTRY_TRACES_SAMPLE_RATE", 0),
+		SentryTraceSampleRate: loader.unitFloat("SENTRY_TRACES_SAMPLE_RATE", 0),
 		MetricsToken:          os.Getenv("METRICS_TOKEN"),
-		DailyRecipientLimit:   getPositiveIntEnv("DAILY_RECIPIENT_LIMIT", 1000),
-		PlanFreeDailyLimit:    getPositiveIntEnv("PLAN_FREE_DAILY_LIMIT", getPositiveIntEnv("DAILY_RECIPIENT_LIMIT", 1000)),
-		PlanProDailyLimit:     getPositiveIntEnv("PLAN_PRO_DAILY_LIMIT", 10000),
-		PlanScaleDailyLimit:   getPositiveIntEnv("PLAN_SCALE_DAILY_LIMIT", 100000),
+		DailyRecipientLimit:   dailyRecipientLimit,
+		PlanFreeDailyLimit:    loader.positiveInt("PLAN_FREE_DAILY_LIMIT", dailyRecipientLimit),
+		PlanProDailyLimit:     loader.positiveInt("PLAN_PRO_DAILY_LIMIT", 10000),
+		PlanScaleDailyLimit:   loader.positiveInt("PLAN_SCALE_DAILY_LIMIT", 100000),
 
 		InboundS3Bucket:     getEnv("INBOUND_S3_BUCKET", "sender-api-inbound"),
 		InboundSQSQueueURL:  os.Getenv("INBOUND_SQS_QUEUE_URL"),
 		InboundSNSTopicArn:  os.Getenv("INBOUND_SNS_TOPIC_ARN"),
 		InboundWebhookToken: os.Getenv("INBOUND_WEBHOOK_TOKEN"),
 	}
+	cfg.parseErrors = append(cfg.parseErrors, loader.errors...)
+	return cfg
 }
 
 func (c *Config) IsProduction() bool {
@@ -123,6 +127,9 @@ func (c *Config) IsProduction() bool {
 }
 
 func (c *Config) Validate() error {
+	if len(c.parseErrors) > 0 {
+		return fmt.Errorf("invalid environment configuration: %s", strings.Join(c.parseErrors, "; "))
+	}
 	if err := validateCORSOrigins(c.CORSOrigins, c.IsProduction()); err != nil {
 		return err
 	}
@@ -143,6 +150,9 @@ func (c *Config) Validate() error {
 	}
 	if c.EmailRetentionDays < 0 || c.InboundRetentionDays < 0 {
 		return fmt.Errorf("retention days must not be negative")
+	}
+	if c.WorkerHealthPort != 0 && (c.WorkerHealthPort < 1 || c.WorkerHealthPort > 65535) {
+		return fmt.Errorf("WORKER_HEALTH_PORT must be between 1 and 65535")
 	}
 	if c.DailyRecipientLimit < 0 {
 		return fmt.Errorf("DAILY_RECIPIENT_LIMIT must not be negative")
@@ -316,62 +326,75 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func getBoolEnv(key string, fallback bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
+type envLoader struct {
+	errors []string
+}
+
+func (l *envLoader) invalid(key, expected string) {
+	l.errors = append(l.errors, fmt.Sprintf("%s must be %s", key, expected))
+}
+
+func (l *envLoader) boolean(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
 		return fallback
 	}
-	b, err := strconv.ParseBool(v)
+	parsed, err := strconv.ParseBool(value)
 	if err != nil {
+		l.invalid(key, "a boolean")
 		return fallback
 	}
-	return b
+	return parsed
 }
 
-func getPositiveIntEnv(key string, fallback int) int {
-	v := os.Getenv(key)
-	if v == "" {
+func (l *envLoader) positiveInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
 		return fallback
 	}
-	value, err := strconv.Atoi(v)
-	if err != nil || value < 1 {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		l.invalid(key, "a positive integer")
 		return fallback
 	}
-	return value
+	return parsed
 }
 
-func getNonNegativeIntEnv(key string, fallback int) int {
-	v := os.Getenv(key)
-	if v == "" {
+func (l *envLoader) nonNegativeInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
 		return fallback
 	}
-	value, err := strconv.Atoi(v)
-	if err != nil || value < 0 {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		l.invalid(key, "a non-negative integer")
 		return fallback
 	}
-	return value
+	return parsed
 }
 
-func getFloatEnv(key string, fallback float64) float64 {
-	v := os.Getenv(key)
-	if v == "" {
+func (l *envLoader) unitFloat(key string, fallback float64) float64 {
+	value := os.Getenv(key)
+	if value == "" {
 		return fallback
 	}
-	value, err := strconv.ParseFloat(v, 64)
-	if err != nil || math.IsNaN(value) || value < 0 || value > 1 {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsed) || parsed < 0 || parsed > 1 {
+		l.invalid(key, "a number between 0 and 1")
 		return fallback
 	}
-	return value
+	return parsed
 }
 
-func getDurationEnv(key string, fallback time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
+func (l *envLoader) duration(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
 		return fallback
 	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		l.invalid(key, "a positive duration")
 		return fallback
 	}
-	return d
+	return parsed
 }

@@ -21,6 +21,7 @@ func NewContactRepo(db *pgxpool.Pool) *ContactRepo {
 func (r *ContactRepo) Create(ctx context.Context, contact *domain.Contact) error {
 	propsJSON, _ := json.Marshal(contact.Properties)
 	subscribed := contact.Subscribed
+	contact.Email = domain.NormalizeEmail(contact.Email)
 
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO contacts (id, team_id, email, first_name, last_name, subscribed, properties)
@@ -47,11 +48,15 @@ func (r *ContactRepo) GetUnsubscribedByEmails(ctx context.Context, teamID uuid.U
 	if len(emails) == 0 {
 		return nil, nil
 	}
+	canonicalEmails := make([]string, 0, len(emails))
+	for _, email := range emails {
+		canonicalEmails = append(canonicalEmails, domain.NormalizeEmail(email))
+	}
 	rows, err := r.db.Query(ctx, `
 		SELECT email
 		FROM contacts
-		WHERE team_id = $1 AND subscribed = false AND email = ANY($2)
-	`, teamID, emails)
+		WHERE team_id = $1 AND subscribed = false AND LOWER(email) = ANY($2)
+	`, teamID, canonicalEmails)
 	if err != nil {
 		return nil, fmt.Errorf("query unsubscribed contacts: %w", err)
 	}
@@ -87,8 +92,8 @@ func (r *ContactRepo) GetByEmail(ctx context.Context, teamID uuid.UUID, email st
 	var propsJSON []byte
 	err := r.db.QueryRow(ctx, `
 		SELECT id, team_id, email, first_name, last_name, subscribed, properties, created_at, updated_at
-		FROM contacts WHERE team_id = $1 AND email = $2
-	`, teamID, email).Scan(&c.ID, &c.TeamID, &c.Email, &c.FirstName, &c.LastName, &c.Subscribed, &propsJSON, &c.CreatedAt, &c.UpdatedAt)
+		FROM contacts WHERE team_id = $1 AND LOWER(email) = LOWER($2)
+	`, teamID, domain.NormalizeEmail(email)).Scan(&c.ID, &c.TeamID, &c.Email, &c.FirstName, &c.LastName, &c.Subscribed, &propsJSON, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +105,7 @@ func (r *ContactRepo) SetSubscribedByEmail(ctx context.Context, teamID uuid.UUID
 	tag, err := r.db.Exec(ctx, `
 		UPDATE contacts
 		SET subscribed = $1, updated_at = NOW()
-		WHERE team_id = $2 AND email = $3
+		WHERE team_id = $2 AND LOWER(email) = LOWER($3)
 	`, subscribed, teamID, domain.NormalizeEmail(email))
 	return tag.RowsAffected() == 1, err
 }
@@ -146,6 +151,7 @@ func (r *ContactRepo) List(ctx context.Context, teamID uuid.UUID, limit, offset 
 
 func (r *ContactRepo) Update(ctx context.Context, contact *domain.Contact) error {
 	propsJSON, _ := json.Marshal(contact.Properties)
+	contact.Email = domain.NormalizeEmail(contact.Email)
 	_, err := r.db.Exec(ctx, `
 		UPDATE contacts SET email = $1, first_name = $2, last_name = $3, subscribed = $4, properties = $5, updated_at = NOW()
 		WHERE id = $6
@@ -155,6 +161,7 @@ func (r *ContactRepo) Update(ctx context.Context, contact *domain.Contact) error
 
 func (r *ContactRepo) UpdateForTeam(ctx context.Context, contact *domain.Contact) error {
 	propsJSON, _ := json.Marshal(contact.Properties)
+	contact.Email = domain.NormalizeEmail(contact.Email)
 	_, err := r.db.Exec(ctx, `
 		UPDATE contacts SET email = $1, first_name = $2, last_name = $3, subscribed = $4, properties = $5, updated_at = NOW()
 		WHERE id = $6 AND team_id = $7
@@ -180,6 +187,7 @@ func (r *ContactRepo) BulkCreate(ctx context.Context, contacts []*domain.Contact
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	for _, c := range contacts {
+		c.Email = domain.NormalizeEmail(c.Email)
 		propsJSON, _ := json.Marshal(c.Properties)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO contacts (id, team_id, email, first_name, last_name, subscribed, properties)

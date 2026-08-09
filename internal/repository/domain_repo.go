@@ -83,7 +83,7 @@ func (r *DomainRepo) GetByName(ctx context.Context, teamID uuid.UUID, name strin
 
 func (r *DomainRepo) List(ctx context.Context, teamID uuid.UUID) (*domain.DomainListResponse, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, team_id, name, status, verification_token, verification_status, ses_verification_status, spf_status, mx_status, dkim_status, dmarc_status, dkim_dns_records, created_at
+		SELECT id, team_id, name, status, verification_token, verification_status, ses_verification_status, spf_status, mx_status, dkim_status, dmarc_status, dkim_dns_record, dkim_dns_records, spf_dns_record, mx_dns_record, dmarc_dns_record, verification_dns_record, created_at
 		FROM domains WHERE team_id = $1
 		ORDER BY created_at DESC
 	`, teamID)
@@ -97,7 +97,8 @@ func (r *DomainRepo) List(ctx context.Context, teamID uuid.UUID) (*domain.Domain
 		var d domain.Domain
 		var dkimRecords []byte
 		err := rows.Scan(&d.ID, &d.TeamID, &d.Name, &d.Status, &d.VerificationToken, &d.VerificationStatus,
-			&d.SESVerificationStatus, &d.SPFStatus, &d.MXStatus, &d.DKIMStatus, &d.DMARCStatus, &dkimRecords, &d.CreatedAt)
+			&d.SESVerificationStatus, &d.SPFStatus, &d.MXStatus, &d.DKIMStatus, &d.DMARCStatus, &d.DKIMDNSRecord, &dkimRecords,
+			&d.SPFDNSRecord, &d.MXDNSRecord, &d.DMARCDNSRecord, &d.VerificationDNSRecord, &d.CreatedAt)
 		if err != nil {
 			return nil, err
 		}

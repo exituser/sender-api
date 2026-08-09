@@ -90,26 +90,63 @@ func (s *DomainService) Create(ctx context.Context, teamID uuid.UUID, req *domai
 	s.logger.Info("domain created", "domain_id", d.ID, "name", d.Name)
 
 	return &domain.DomainResponse{
-		ID:     d.ID,
-		Name:   d.Name,
-		Status: d.Status,
-		DNSRecords: append([]domain.DNSRecord{
-			{Type: domain.DNSRecordTypeTXT, Host: "@", Value: *d.SPFDNSRecord, TTL: 3600, Status: d.SPFStatus},
-			{Type: domain.DNSRecordTypeMX, Host: "@", Value: *d.MXDNSRecord, TTL: 3600, Status: d.MXStatus, Optional: true},
-			{Type: domain.DNSRecordTypeTXT, Host: "_sender-api-verification", Value: token, TTL: 3600, Status: d.VerificationStatus},
-			{Type: domain.DNSRecordTypeTXT, Host: "_dmarc", Value: "v=DMARC1; p=none", TTL: 3600, Status: d.DMARCStatus},
-		}, d.DKIMDNSRecords...),
+		ID:           d.ID,
+		Name:         d.Name,
+		Status:       d.Status,
+		DNSRecords:   buildDNSRecords(d),
 		Instructions: "Add or merge the SPF, Sender API verification TXT, DKIM CNAME, and DMARC TXT records, then call the verify endpoint. The SES inbound MX record is optional and is only needed if you enable inbound email. Never replace existing MX records without reviewing your current mail routing.",
 		CreatedAt:    d.CreatedAt,
 	}, nil
 }
 
+func buildDNSRecords(d *domain.Domain) []domain.DNSRecord {
+	if d == nil {
+		return nil
+	}
+	records := make([]domain.DNSRecord, 0, 4+len(d.DKIMDNSRecords))
+	if d.SPFDNSRecord != nil && strings.TrimSpace(*d.SPFDNSRecord) != "" {
+		records = append(records, domain.DNSRecord{Type: domain.DNSRecordTypeTXT, Host: "@", Value: *d.SPFDNSRecord, TTL: 3600, Status: d.SPFStatus})
+	}
+	if d.MXDNSRecord != nil && strings.TrimSpace(*d.MXDNSRecord) != "" {
+		records = append(records, domain.DNSRecord{Type: domain.DNSRecordTypeMX, Host: "@", Value: *d.MXDNSRecord, TTL: 3600, Status: d.MXStatus, Optional: true})
+	}
+	if d.VerificationDNSRecord != nil && strings.TrimSpace(*d.VerificationDNSRecord) != "" && d.VerificationToken != "" {
+		records = append(records, domain.DNSRecord{Type: domain.DNSRecordTypeTXT, Host: dnsRecordHost(*d.VerificationDNSRecord, d.Name), Value: d.VerificationToken, TTL: 3600, Status: d.VerificationStatus})
+	}
+	if d.DMARCDNSRecord != nil && strings.TrimSpace(*d.DMARCDNSRecord) != "" {
+		records = append(records, domain.DNSRecord{Type: domain.DNSRecordTypeTXT, Host: dnsRecordHost(*d.DMARCDNSRecord, d.Name), Value: "v=DMARC1; p=none", TTL: 3600, Status: d.DMARCStatus})
+	}
+	return append(records, d.DKIMDNSRecords...)
+}
+
+func dnsRecordHost(record, domainName string) string {
+	record = strings.TrimSuffix(strings.TrimSpace(record), ".")
+	domainName = strings.TrimSuffix(strings.TrimSpace(domainName), ".")
+	suffix := "." + domainName
+	if domainName != "" && strings.HasSuffix(record, suffix) {
+		return strings.TrimSuffix(record, suffix)
+	}
+	return record
+}
+
 func (s *DomainService) GetByID(ctx context.Context, teamID, id uuid.UUID) (*domain.Domain, error) {
-	return s.domainRepo.GetByIDForTeam(ctx, teamID, id)
+	d, err := s.domainRepo.GetByIDForTeam(ctx, teamID, id)
+	if err != nil {
+		return nil, err
+	}
+	d.DNSRecords = buildDNSRecords(d)
+	return d, nil
 }
 
 func (s *DomainService) List(ctx context.Context, teamID uuid.UUID) (*domain.DomainListResponse, error) {
-	return s.domainRepo.List(ctx, teamID)
+	result, err := s.domainRepo.List(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range result.Data {
+		result.Data[i].DNSRecords = buildDNSRecords(&result.Data[i])
+	}
+	return result, nil
 }
 
 func (s *DomainService) Verify(ctx context.Context, teamID, domainID uuid.UUID) error {

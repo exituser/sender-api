@@ -49,17 +49,19 @@ func (s *acceptedSenderStub) Send(context.Context, *domain.Email) (string, error
 
 type acceptedQueueStub struct {
 	domain.EmailQueue
-	emailID      string
+	receipt      *domain.QueueReceipt
 	ackCalls     int
 	requeueCalls int
 }
 
-func (s *acceptedQueueStub) Dequeue(context.Context) (string, error) { return s.emailID, nil }
-func (s *acceptedQueueStub) Ack(context.Context, string) error {
+func (s *acceptedQueueStub) Dequeue(context.Context) (*domain.QueueReceipt, error) {
+	return s.receipt, nil
+}
+func (s *acceptedQueueStub) Ack(context.Context, *domain.QueueReceipt) error {
 	s.ackCalls++
 	return nil
 }
-func (s *acceptedQueueStub) Requeue(context.Context, string, bool) error {
+func (s *acceptedQueueStub) Requeue(context.Context, *domain.QueueReceipt, bool) error {
 	s.requeueCalls++
 	return nil
 }
@@ -68,7 +70,7 @@ func TestEmailWorkerAcknowledgesProviderAcceptedEmailWhenStatusPersistenceFails(
 	emailID := uuid.New()
 	repo := &acceptedEmailRepoStub{email: &domain.Email{ID: emailID, TeamID: uuid.New(), Status: domain.EmailStatusQueued}}
 	sender := &acceptedSenderStub{}
-	queue := &acceptedQueueStub{emailID: emailID.String()}
+	queue := &acceptedQueueStub{receipt: &domain.QueueReceipt{EmailID: emailID.String(), Token: "test-token"}}
 	emailService := service.NewEmailService(repo, nil, nil, sender, nil, nil, slog.Default())
 	worker := NewEmailWorker(emailService, queue, slog.Default(), 0)
 

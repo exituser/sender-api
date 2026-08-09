@@ -2,6 +2,29 @@ package config
 
 import "testing"
 
+func TestLoadRejectsMalformedTypedEnvironmentValues(t *testing.T) {
+	cases := []struct {
+		key   string
+		value string
+	}{
+		{key: "DEBUG", value: "sometimes"},
+		{key: "DB_MAX_CONNS", value: "many"},
+		{key: "EMAIL_RETENTION_DAYS", value: "-1"},
+		{key: "WORKER_POLL_INTERVAL", value: "soon"},
+		{key: "SENTRY_TRACES_SAMPLE_RATE", value: "NaN"},
+		{key: "WORKER_HEALTH_PORT", value: "70000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			t.Setenv(tc.key, tc.value)
+			cfg := Load()
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected malformed %s to fail validation", tc.key)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsWildcardCORS(t *testing.T) {
 	cfg := &Config{CORSOrigins: "*"}
 	if err := cfg.Validate(); err == nil {

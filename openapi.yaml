@@ -109,6 +109,25 @@ paths:
     get:
       summary: List email events
       responses: { '200': { $ref: '#/components/responses/JSON' } }
+  /emails/{id}/reconcile:
+    parameters:
+      - $ref: '#/components/parameters/ID'
+      - $ref: '#/components/parameters/TeamID'
+    post:
+      summary: Resolve an uncertain provider handoff
+      description: Workspace owners and admins may close an uncertain send as failed. It may be confirmed as accepted only when a correlated positive provider event is already stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReconcileEmailRequest' }
+      responses:
+        '200': { description: Updated email, content: { application/json: { schema: { $ref: '#/components/schemas/Email' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: The message no longer needs review or positive provider evidence is unavailable., content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /teams:
     get:
       summary: List teams for the current user
@@ -418,7 +437,16 @@ components:
         status_label: { type: string }
         alerts: { type: array, items: { type: object } }
         domains: { type: array, items: { type: object } }
-        delivery: { type: object }
+        delivery:
+          type: object
+          properties:
+            sent: { type: integer, minimum: 0 }
+            delivered: { type: integer, minimum: 0 }
+            bounced: { type: integer, minimum: 0 }
+            complained: { type: integer, minimum: 0 }
+            failed: { type: integer, minimum: 0 }
+            uncertain: { type: integer, minimum: 0, description: Messages whose final provider handoff cannot yet be confirmed. }
+            queued: { type: integer, minimum: 0 }
         delivery_tracking: { type: object }
         audience: { type: object }
         webhooks: { type: object }
@@ -429,6 +457,32 @@ components:
       properties:
         id: { type: string, format: uuid }
         idempotent: { type: boolean }
+    Email:
+      type: object
+      required: [id, team_id, from, to, subject, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        team_id: { type: string, format: uuid }
+        from: { type: string, format: email }
+        to: { type: array, items: { type: string, format: email } }
+        subject: { type: string }
+        status: { $ref: '#/components/schemas/EmailStatus' }
+        provider_message_id: { type: [string, 'null'] }
+        delivery_review_started_at: { type: [string, 'null'], format: date-time }
+        provider_evidence: { type: boolean, description: A correlated positive provider event is stored. }
+        can_reconcile: { type: boolean, description: The current principal may complete this delivery review. }
+        created_at: { type: string, format: date-time }
+        sent_at: { type: [string, 'null'], format: date-time }
+    EmailStatus:
+      type: string
+      enum: [queued, sending, sent, delivered, opened, clicked, bounced, complained, failed, cancelled, ambiguous]
+    ReconcileEmailRequest:
+      type: object
+      required: [action]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [accepted, failed] }
+        provider_message_id: { type: string, description: Optional candidate receipt; it is accepted only when it matches stored positive provider evidence. }
     Error:
       type: object
       required: [error]

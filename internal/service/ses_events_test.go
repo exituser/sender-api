@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sender-api/sender-api/internal/domain"
@@ -98,5 +100,26 @@ func TestProviderStatusDoesNotRegress(t *testing.T) {
 	}
 	if shouldApplyProviderStatus(domain.EmailStatusBounced, domain.EmailStatusOpened) {
 		t.Fatal("open must not override a bounce")
+	}
+	if shouldApplyProviderStatus(domain.EmailStatusFailed, domain.EmailStatusDelivered) {
+		t.Fatal("a positive event must not resurrect a terminal failure")
+	}
+	if !shouldApplyProviderStatus(domain.EmailStatusAmbiguous, domain.EmailStatusSent) {
+		t.Fatal("verified provider evidence should resolve an ambiguous send")
+	}
+}
+
+func TestProviderRetryTerminalizesDeterministicMismatchAndStaleEvents(t *testing.T) {
+	now := time.Now().UTC()
+	inbox := &domain.ProviderEventInbox{CreatedAt: now.Add(-time.Hour)}
+	if !providerRetryIsTerminal(inbox, domain.ErrProviderCorrelationMismatch, now) {
+		t.Fatal("deterministic provider correlation mismatch must not retry forever")
+	}
+	if providerRetryIsTerminal(inbox, errors.New("database unavailable"), now) {
+		t.Fatal("fresh transient provider event failure should remain retryable")
+	}
+	inbox.CreatedAt = now.Add(-7 * 24 * time.Hour)
+	if !providerRetryIsTerminal(inbox, errors.New("database unavailable"), now) {
+		t.Fatal("stale provider event must eventually leave the retry loop")
 	}
 }

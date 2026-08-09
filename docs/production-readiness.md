@@ -53,15 +53,20 @@ provider, DNS, TLS, backups, and a real smoke test are verified together.
 - Batch sends require an idempotency key and return HTTP 207 with accepted item
   IDs when a later item fails. Webhook consumers must deduplicate delivery IDs
   because delivery is at-least-once.
-- `make backup` creates a permission-restricted custom-format PostgreSQL dump.
+- `make backup` creates a permission-restricted custom-format PostgreSQL dump
+  from either `DATABASE_URL` or the running Compose `db` service, and validates
+  the archive header before reporting success.
   Restore is deliberately gated by `CONFIRM_RESTORE=YES`.
 - `infra/systemd/sender-api-backup.service` and `.timer` provide a daily local
   backup schedule with 14-day rotation under `/home/ubuntu/sender-api-backups`.
   Install them on the host, then copy
   the resulting dumps to separate storage and test a restore before launch.
-- The worker purges terminal outbound messages after `EMAIL_RETENTION_DAYS`
-  and parsed inbound messages after `INBOUND_RETENTION_DAYS`; set both to `0`
-  only when an approved retention policy requires indefinite storage.
+  The backup host must not be the only copy.
+- The worker purges terminal outbound messages after `EMAIL_RETENTION_DAYS`.
+  For inbound mail it deletes the raw S3 object first and removes the database
+  row only after S3 confirms deletion, so a transient object-store failure does
+  not orphan an undiscoverable copy. Set either retention value to `0` only
+  when an approved policy requires indefinite storage.
 - Failed webhook deliveries can be replayed by an owner or admin after the
   endpoint has been repaired; delivery remains at-least-once.
 
@@ -81,13 +86,28 @@ AWS/Supabase/hosting accounts:
    For Compose, use `COMPOSE_DATABASE_URL` and `COMPOSE_REDIS_URL`; the
    host-run `DATABASE_URL` and `REDIS_URL` values must not be copied into
    containers when they point at `localhost`.
+   With managed datastores, start only the application path so unused local
+   containers are not created:
+
+   ```bash
+   docker compose up -d migrate db-role api worker web
+   ```
+
+   The migration preflight and application readiness checks connect to the
+   configured URLs directly, so local `db` or `redis` health cannot block that
+   rollout.
 4. The sender domain is verified in SES and DNS. Inbound domains must also have
    the SES MX record and an active receipt rule set. Confirm the recipient before
    activating mail flow.
-5. Outbound SES events have a configuration-set SNS destination and a public
-   HTTPS callback. Do not put a placeholder ARN or callback URL into production.
+5. If outbound SES events are enabled, they have a configuration-set SNS
+   destination and a public HTTPS callback. An outbound-only deployment may
+   intentionally leave `OUTBOUND_SES_TOPIC_ARN` blank, but must keep
+   `REQUIRE_OUTBOUND_SES_EVENTS=false`.
 6. A backup is stored outside the application host, a restore has been tested
    into an isolated database, and the RPO/RTO are written down.
+   The inbound S3 principal must have `s3:DeleteObject`, and the bucket should
+   also enforce a lifecycle expiration matching the approved retention period
+   as defense in depth.
 7. Abuse controls are reviewed: daily quota, request rate limit, API-key
    rotation, bounce/complaint handling, and a support path. If Stripe is
    enabled, verify live price IDs, webhook delivery, cancellation behavior,
@@ -100,9 +120,11 @@ AWS/Supabase/hosting accounts:
 
 ```bash
 CORS_ORIGINS=https://app.example.com \
+AWS_REGION=eu-west-1 \
 SUPABASE_URL=https://project.supabase.co \
 METRICS_TOKEN=local-check-token \
 POSTGRES_PASSWORD=local-check-password \
+APP_DB_PASSWORD=local-app-password \
 NEXT_PUBLIC_API_URL=https://api.example.com \
 NEXT_PUBLIC_SUPABASE_URL=https://project.supabase.co \
 NEXT_PUBLIC_SUPABASE_ANON_KEY=local-check-anon \
@@ -125,6 +147,30 @@ For the local stack, verify `/health`, `/readyz`, `/healthz`, the worker logs,
 and that the database migration marker is clean. Never use `docker compose down
 -v` against a database containing data unless the volume deletion is the
 explicit, reviewed operation.
+
+## Compose backup and restore
+
+With the production stack running, the backup path needs no host PostgreSQL
+client or database password in the shell environment:
+
+```bash
+BACKUP_DIR=/var/backups/sender-api make backup
+pg_restore --list /var/backups/sender-api/sender-api-<timestamp>.dump >/dev/null
+```
+
+Copy each dump to separate storage before rotating local files. For a restore,
+use an isolated database or maintenance window and require the explicit guard:
+
+```bash
+CONFIRM_RESTORE=YES \
+BACKUP_FILE=/var/backups/sender-api/sender-api-<timestamp>.dump \
+make restore
+```
+
+After restore, rerun the migration/schema preflight, verify `13|false`, and
+exercise `/health`, `/readyz`, one authenticated read, and one disposable send
+before returning traffic. Periodically restore a copied dump into an isolated
+PostgreSQL instance and record the restore duration and schema checks.
 
 ## Inbound error interpretation
 
