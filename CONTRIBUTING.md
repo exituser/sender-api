@@ -19,10 +19,12 @@ easier to review and safer to deploy.
 4. Run the relevant checks before opening a pull request:
 
    ```bash
-   find cmd internal pkg -type f -name '*.go' -exec gofmt -w {} +
+   make lint
    go test ./cmd/... ./internal/... ./pkg/...
+   go test -race ./cmd/... ./internal/... ./pkg/...
    go vet ./cmd/... ./internal/... ./pkg/...
    go build ./cmd/...
+   make audit
 
    cd web
    npm ci
@@ -30,7 +32,6 @@ easier to review and safer to deploy.
    npm run lint
    npx tsc --noEmit
    npm run build
-   npm audit --omit=dev --audit-level=high
    ```
 
 5. Update documentation and migrations when the public contract changes.

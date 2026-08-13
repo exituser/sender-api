@@ -159,11 +159,6 @@ func sesOutcomeUnknown(err error) bool {
 	return true
 }
 
-func sesErrorRetryable(err error) bool {
-	retryable, _, _, _ := sesErrorDetails(err)
-	return retryable
-}
-
 // sesErrorDetails maps provider failures into the RFC 3463-style status model
 // exposed by the API. SES returns AWS error codes rather than SMTP responses,
 // so these codes are normalized equivalents, not wire-level SMTP evidence.

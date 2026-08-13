@@ -404,7 +404,3 @@ func providerEventDetails(eventType string) (string, domain.EmailStatus, bool) {
 func shouldApplyProviderStatus(current, target domain.EmailStatus) bool {
 	return domain.ShouldApplyProviderStatus(current, target)
 }
-
-func providerStatusRank(status domain.EmailStatus) int {
-	return domain.ProviderStatusRank(status)
-}

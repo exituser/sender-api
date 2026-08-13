@@ -350,16 +350,18 @@ The frontend `npm run lint` command uses Oxlint with TypeScript, React,
 Next.js, JSX accessibility, and import checks enabled.
 
 ```bash
+make lint
 make test
+go test -race ./cmd/... ./internal/... ./pkg/...
 go vet ./cmd/... ./internal/... ./pkg/...
 go build ./cmd/...
+make audit
 
 cd web
 npm ci
 npm run lint
 npx tsc --noEmit
 npm run build
-npm audit --omit=dev --audit-level=high
 ```
 
 ## Project Structure

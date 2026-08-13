@@ -31,6 +31,12 @@ jobs:
       - name: Check formatting
         run: test -z "$(find cmd internal pkg -type f -name '*.go' -exec gofmt -l {} +)"
 
+      - name: Go lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+
       - name: Test
         run: go test ./cmd/... ./internal/... ./pkg/...
 
@@ -42,6 +48,12 @@ jobs:
 
       - name: Build
         run: go build ./cmd/...
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Audit Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   frontend:
     name: Frontend
@@ -73,7 +85,7 @@ jobs:
         run: npm run build
 
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --audit-level=low
 
   compose:
     name: Compose and integration

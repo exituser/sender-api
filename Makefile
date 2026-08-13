@@ -1,4 +1,4 @@
-.PHONY: build run worker dev dev-down test clean migrate-up migrate-down migrate-check lint tidy backup restore
+.PHONY: build run worker dev dev-down test clean migrate-up migrate-down migrate-check lint audit tidy backup restore
 
 build:
 	go build -o bin/api ./cmd/api
@@ -35,6 +35,11 @@ migrate-down:
 
 lint:
 	golangci-lint run
+
+audit:
+	go mod verify
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	cd web && npm audit --audit-level=low
 
 tidy:
 	go mod tidy

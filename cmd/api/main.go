@@ -259,11 +259,11 @@ func main() {
 		if !ready {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"not_ready","checks":{"schema":%t,"outbound_ses_events":%t}}`, schemaReady, outboundEventsReady)))
+			_, _ = fmt.Fprintf(w, `{"status":"not_ready","checks":{"schema":%t,"outbound_ses_events":%t}}`, schemaReady, outboundEventsReady)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"ready","checks":{"schema":%t,"outbound_ses_events":%t}}`, schemaReady, outboundEventsReady)))
+		_, _ = fmt.Fprintf(w, `{"status":"ready","checks":{"schema":%t,"outbound_ses_events":%t}}`, schemaReady, outboundEventsReady)
 	})
 	metricsHandler := http.Handler(http.HandlerFunc(metrics.Handler))
 	if cfg.MetricsToken != "" {
