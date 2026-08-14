@@ -32,7 +32,7 @@ jobs:
         run: test -z "$(find cmd internal pkg -type f -name '*.go' -exec gofmt -l {} +)"
 
       - name: Go lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           args: --timeout=5m
